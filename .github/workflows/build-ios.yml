@@ -1,0 +1,73 @@
+name: Build & Upload Wromble iOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Build Archive
+        run: |
+          xcodebuild archive \
+            -project Wromble.xcodeproj \
+            -scheme Wromble \
+            -configuration Release \
+            -archivePath build/Wromble.xcarchive \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            -allowProvisioningUpdates
+
+      - name: Export IPA
+        run: |
+          cat > ExportOptions.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>development</string>
+            <key>compileBitcode</key>
+            <false/>
+          </dict>
+          </plist>
+          EOF
+
+          mkdir -p build/ipa
+          # Create IPA from archive manually (unsigned for now)
+          cd build/Wromble.xcarchive/Products/Applications
+          mkdir -p Payload
+          cp -r Wromble.app Payload/ 2>/dev/null || true
+          if [ -d "Payload/Wromble.app" ]; then
+            zip -r ../../../ipa/Wromble.ipa Payload
+          else
+            # Alternative: find the .app
+            APP_PATH=$(find .. -name "*.app" -type d | head -1)
+            if [ -n "$APP_PATH" ]; then
+              mkdir -p Payload
+              cp -r "$APP_PATH" Payload/
+              zip -r ../../../ipa/Wromble.ipa Payload
+            fi
+          fi
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wromble-IPA
+          path: build/ipa/Wromble.ipa
+          if-no-files-found: warn
+
+      - name: Upload Archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wromble-Archive
+          path: build/Wromble.xcarchive
+          if-no-files-found: warn
