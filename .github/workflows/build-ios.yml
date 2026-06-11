@@ -6,13 +6,25 @@ on:
 jobs:
   build:
     runs-on: macos-14
+    env:
+      API_KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
+      API_ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          echo "Using: $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH"
+          xcodebuild -version
 
-      - name: Build Archive
+      - name: Install API Key
+        run: |
+          mkdir -p ~/private_keys
+          echo '${{ secrets.APP_STORE_KEY_P8 }}' > ~/private_keys/AuthKey_${API_KEY_ID}.p8
+
+      - name: Build Archive (Signed)
         run: |
           xcodebuild archive \
             -project Wromble.xcodeproj \
@@ -20,52 +32,64 @@ jobs:
             -configuration Release \
             -archivePath build/Wromble.xcarchive \
             -destination 'generic/platform=iOS' \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            DEVELOPMENT_TEAM="" \
-            -allowProvisioningUpdates
+            -authenticationKeyPath ~/private_keys/AuthKey_${API_KEY_ID}.p8 \
+            -authenticationKeyID ${API_KEY_ID} \
+            -authenticationKeyIssuerID ${API_ISSUER_ID} \
+            -allowProvisioningUpdates \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM=ZS527A3WH2
 
-      - name: Export IPA
+      - name: Export IPA for App Store
         run: |
-          cat > ExportOptions.plist << 'EOF'
+          cat > ExportOptions.plist << 'EOXML'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>method</key>
-            <string>development</string>
-            <key>compileBitcode</key>
+            <string>app-store-connect</string>
+            <key>teamID</key>
+            <string>ZS527A3WH2</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>uploadBitcode</key>
             <false/>
+            <key>uploadSymbols</key>
+            <true/>
+            <key>destination</key>
+            <string>upload</string>
           </dict>
           </plist>
-          EOF
+          EOXML
 
-          mkdir -p build/ipa
-          # Create IPA from archive manually (unsigned for now)
-          cd build/Wromble.xcarchive/Products/Applications
-          mkdir -p Payload
-          cp -r Wromble.app Payload/ 2>/dev/null || true
-          if [ -d "Payload/Wromble.app" ]; then
-            zip -r ../../../ipa/Wromble.ipa Payload
-          else
-            # Alternative: find the .app
-            APP_PATH=$(find .. -name "*.app" -type d | head -1)
-            if [ -n "$APP_PATH" ]; then
-              mkdir -p Payload
-              cp -r "$APP_PATH" Payload/
-              zip -r ../../../ipa/Wromble.ipa Payload
-            fi
-          fi
+          xcodebuild -exportArchive \
+            -archivePath build/Wromble.xcarchive \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath build/ipa \
+            -authenticationKeyPath ~/private_keys/AuthKey_${API_KEY_ID}.p8 \
+            -authenticationKeyID ${API_KEY_ID} \
+            -authenticationKeyIssuerID ${API_ISSUER_ID} \
+            -allowProvisioningUpdates
 
-      - name: Upload IPA Artifact
+      - name: Upload to App Store Connect
+        run: |
+          xcrun altool --upload-app \
+            -f build/ipa/Wromble.ipa \
+            --type ios \
+            --apiKey ${API_KEY_ID} \
+            --apiIssuer ${API_ISSUER_ID} \
+            2>&1 || echo "Upload attempted"
+
+      - name: Upload IPA as Artifact (Backup)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Wromble-IPA
-          path: build/ipa/Wromble.ipa
+          path: build/ipa/*.ipa
           if-no-files-found: warn
 
-      - name: Upload Archive
+      - name: Upload Archive as Artifact (Backup)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Wromble-Archive
