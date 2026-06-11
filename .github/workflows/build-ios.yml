@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       API_KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
       API_ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
