@@ -752,14 +752,25 @@ struct WrombleWebView: UIViewRepresentable {
                 return
             }
 
-            if url.scheme == "tel" || url.scheme == "mailto" || host.contains("apple.com") || host.contains("maps.google") || host.contains("maps.apple") {
+            if url.scheme == "tel" || url.scheme == "mailto" {
                 UIApplication.shared.open(url)
                 decisionHandler(.cancel)
                 return
             }
 
-            if host.contains("stripe.com") || host.contains("mobilepay") {
+            // OAuth / auth flows must stay in-app
+            let authDomains = ["facebook.com", "fbcdn.net", "facebook.net",
+                               "google.com", "googleapis.com", "gstatic.com",
+                               "apple.com", "icloud.com",
+                               "stripe.com", "mobilepay"]
+            if authDomains.contains(where: { host.contains($0) }) {
                 decisionHandler(.allow)
+                return
+            }
+
+            if host.contains("maps.google") || host.contains("maps.apple") {
+                UIApplication.shared.open(url)
+                decisionHandler(.cancel)
                 return
             }
 
