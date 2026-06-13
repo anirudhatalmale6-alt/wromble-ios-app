@@ -524,7 +524,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.0 (3)")
+                    Text("1.0 (4)")
                         .foregroundColor(.secondary)
                 }
 
