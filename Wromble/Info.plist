@@ -19,7 +19,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
@@ -57,6 +57,12 @@
 	<string>Wromble bruger mikrofonen til tale under videoopkald</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Wromble bruger din placering til at vise restauranter og butikker i naerheden</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Wromble bruger Face ID til sikker login</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>UIStatusBarStyle</key>
