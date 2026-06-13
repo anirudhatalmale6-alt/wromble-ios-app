@@ -43,7 +43,7 @@ struct ContentView: View {
     var mainContent: some View {
         ZStack {
             TabView(selection: $selectedTab) {
-                NavigationView {
+                NavigationStack {
                     ZStack {
                         WrombleWebView(url: $homeURL, locationManager: locationManager)
                         if !appState.networkAvailable {
@@ -58,7 +58,7 @@ struct ContentView: View {
                 }
                 .tag(0)
 
-                NavigationView {
+                NavigationStack {
                     NearbyView(locationManager: locationManager) { url in
                         homeURL = url
                         selectedTab = 0
@@ -70,7 +70,7 @@ struct ContentView: View {
                 }
                 .tag(1)
 
-                NavigationView {
+                NavigationStack {
                     ZStack {
                         WrombleWebView(url: $ordersURL, locationManager: locationManager)
                         if !appState.networkAvailable {
@@ -85,7 +85,7 @@ struct ContentView: View {
                 }
                 .tag(2)
 
-                NavigationView {
+                NavigationStack {
                     ProfileView(locationManager: locationManager)
                 }
                 .tabItem {
@@ -106,39 +106,51 @@ struct ContentView: View {
 // MARK: - Splash Screen
 
 struct SplashView: View {
+    @Environment(\.horizontalSizeClass) var sizeClass
+
     var body: some View {
-        ZStack {
-            Color.white.edgesIgnoringSafeArea(.all)
-            VStack(spacing: 16) {
-                Image("SplashLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 180, height: 180)
-                Text("Wromble")
-                    .font(.system(size: 32, weight: .heavy))
-                    .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
-                Text("Nemt & Enkelt")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(.gray)
+        GeometryReader { geo in
+            ZStack {
+                Color.white.edgesIgnoringSafeArea(.all)
+                VStack(spacing: sizeClass == .regular ? 24 : 16) {
+                    Image("SplashLogo")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: logoSize(for: geo.size), height: logoSize(for: geo.size))
+                    Text("Wromble")
+                        .font(.system(size: sizeClass == .regular ? 44 : 32, weight: .heavy))
+                        .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
+                    Text("Nemt & Enkelt")
+                        .font(.system(size: sizeClass == .regular ? 22 : 16, weight: .medium))
+                        .foregroundColor(.gray)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+
+    func logoSize(for size: CGSize) -> CGFloat {
+        let shortest = min(size.width, size.height)
+        return min(max(shortest * 0.3, 140), 320)
     }
 }
 
 // MARK: - Offline View
 
 struct OfflineView: View {
+    @Environment(\.horizontalSizeClass) var sizeClass
     var onRetry: () -> Void
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: sizeClass == .regular ? 32 : 20) {
             Spacer()
             Image(systemName: "wifi.slash")
-                .font(.system(size: 60))
+                .font(.system(size: sizeClass == .regular ? 80 : 60))
                 .foregroundColor(.gray)
             Text("Ingen internetforbindelse")
-                .font(.title2.bold())
+                .font(sizeClass == .regular ? .title.bold() : .title2.bold())
             Text("Tjek din forbindelse og proev igen")
+                .font(sizeClass == .regular ? .title3 : .body)
                 .foregroundColor(.secondary)
             Button(action: {
                 let generator = UINotificationFeedbackGenerator()
@@ -148,8 +160,8 @@ struct OfflineView: View {
                 Text("Proev igen")
                     .font(.headline)
                     .foregroundColor(.white)
-                    .padding(.horizontal, 40)
-                    .padding(.vertical, 14)
+                    .padding(.horizontal, sizeClass == .regular ? 60 : 40)
+                    .padding(.vertical, sizeClass == .regular ? 18 : 14)
                     .background(Color(red: 226/255, green: 15/255, blue: 30/255))
                     .cornerRadius(12)
             }
@@ -164,6 +176,7 @@ struct OfflineView: View {
 
 struct OnboardingView: View {
     @EnvironmentObject var appState: AppState
+    @Environment(\.horizontalSizeClass) var sizeClass
     @State private var currentPage = 0
 
     let pages: [(icon: String, title: String, subtitle: String)] = [
@@ -174,54 +187,62 @@ struct OnboardingView: View {
     ]
 
     var body: some View {
-        ZStack {
-            Color(.systemBackground).edgesIgnoringSafeArea(.all)
-            VStack {
-                TabView(selection: $currentPage) {
-                    ForEach(0..<pages.count, id: \.self) { index in
-                        VStack(spacing: 24) {
-                            Spacer()
-                            Image(systemName: pages[index].icon)
-                                .font(.system(size: 70))
-                                .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
-                                .padding(.bottom, 10)
-                            Text(pages[index].title)
-                                .font(.title.bold())
-                            Text(pages[index].subtitle)
-                                .font(.body)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 40)
-                            Spacer()
+        GeometryReader { geo in
+            ZStack {
+                Color(.systemBackground).edgesIgnoringSafeArea(.all)
+                VStack {
+                    TabView(selection: $currentPage) {
+                        ForEach(0..<pages.count, id: \.self) { index in
+                            VStack(spacing: sizeClass == .regular ? 36 : 24) {
+                                Spacer()
+                                Image(systemName: pages[index].icon)
+                                    .font(.system(size: iconSize(for: geo.size)))
+                                    .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
+                                    .padding(.bottom, 10)
+                                Text(pages[index].title)
+                                    .font(sizeClass == .regular ? .largeTitle.bold() : .title.bold())
+                                Text(pages[index].subtitle)
+                                    .font(sizeClass == .regular ? .title3 : .body)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, sizeClass == .regular ? 80 : 40)
+                                    .frame(maxWidth: 600)
+                                Spacer()
+                            }
+                            .tag(index)
                         }
-                        .tag(index)
                     }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .always))
+                    .tabViewStyle(.page(indexDisplayMode: .always))
 
-                Button(action: {
-                    let generator = UIImpactFeedbackGenerator(style: .medium)
-                    generator.impactOccurred()
-                    if currentPage < pages.count - 1 {
-                        withAnimation { currentPage += 1 }
-                    } else {
-                        requestPermissions()
-                        appState.hasCompletedOnboarding = true
-                        appState.save()
+                    Button(action: {
+                        let generator = UIImpactFeedbackGenerator(style: .medium)
+                        generator.impactOccurred()
+                        if currentPage < pages.count - 1 {
+                            withAnimation { currentPage += 1 }
+                        } else {
+                            requestPermissions()
+                            appState.hasCompletedOnboarding = true
+                            appState.save()
+                        }
+                    }) {
+                        Text(currentPage == pages.count - 1 ? "Kom i gang" : "Naeste")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
+                            .padding(.vertical, sizeClass == .regular ? 18 : 16)
+                            .background(Color(red: 226/255, green: 15/255, blue: 30/255))
+                            .cornerRadius(14)
                     }
-                }) {
-                    Text(currentPage == pages.count - 1 ? "Kom i gang" : "Naeste")
-                        .font(.headline)
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(Color(red: 226/255, green: 15/255, blue: 30/255))
-                        .cornerRadius(14)
+                    .padding(.horizontal, sizeClass == .regular ? 60 : 30)
+                    .padding(.bottom, 50)
                 }
-                .padding(.horizontal, 30)
-                .padding(.bottom, 50)
             }
         }
+    }
+
+    func iconSize(for size: CGSize) -> CGFloat {
+        let shortest = min(size.width, size.height)
+        return min(max(shortest * 0.15, 60), 120)
     }
 
     func requestPermissions() {
@@ -242,6 +263,7 @@ struct OnboardingView: View {
 struct NearbyView: View {
     @ObservedObject var locationManager: LocationManager
     @EnvironmentObject var appState: AppState
+    @Environment(\.horizontalSizeClass) var sizeClass
     var onOpenURL: (URL) -> Void
 
     let categories: [(name: String, icon: String, path: String)] = [
@@ -258,106 +280,115 @@ struct NearbyView: View {
         ("Support", "message.fill", "/contact/"),
     ]
 
+    var gridColumns: [GridItem] {
+        if sizeClass == .regular {
+            return [GridItem(.adaptive(minimum: 240), spacing: 16)]
+        }
+        return [GridItem(.flexible()), GridItem(.flexible())]
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: sizeClass == .regular ? 36 : 24) {
                 if let loc = locationManager.location {
                     HStack(spacing: 8) {
                         Image(systemName: "location.fill")
                             .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
                         Text("Din placering fundet")
-                            .font(.subheadline)
+                            .font(sizeClass == .regular ? .body : .subheadline)
                             .foregroundColor(.secondary)
                         Spacer()
                         Text(String(format: "%.4f, %.4f", loc.coordinate.latitude, loc.coordinate.longitude))
-                            .font(.caption)
+                            .font(sizeClass == .regular ? .subheadline : .caption)
                             .foregroundColor(.secondary)
                     }
-                    .padding(.horizontal)
+                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                 } else if locationManager.authorizationStatus == .denied {
                     HStack(spacing: 8) {
                         Image(systemName: "location.slash.fill")
                             .foregroundColor(.orange)
                         Text("Placering deaktiveret")
-                            .font(.subheadline)
+                            .font(sizeClass == .regular ? .body : .subheadline)
                         Spacer()
                         Button("Aktiver") {
                             if let url = URL(string: UIApplication.openSettingsURLString) {
                                 UIApplication.shared.open(url)
                             }
                         }
-                        .font(.subheadline.bold())
+                        .font(sizeClass == .regular ? .body.bold() : .subheadline.bold())
                         .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
                     }
-                    .padding(.horizontal)
+                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                 }
 
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: sizeClass == .regular ? 18 : 12) {
                     Text("Kategorier")
-                        .font(.title2.bold())
-                        .padding(.horizontal)
+                        .font(sizeClass == .regular ? .title.bold() : .title2.bold())
+                        .padding(.horizontal, sizeClass == .regular ? 24 : 16)
 
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    LazyVGrid(columns: gridColumns, spacing: sizeClass == .regular ? 16 : 12) {
                         ForEach(categories, id: \.name) { cat in
                             Button(action: {
                                 let generator = UIImpactFeedbackGenerator(style: .medium)
                                 generator.impactOccurred()
                                 onOpenURL(URL(string: "https://wromble.dk\(cat.path)")!)
                             }) {
-                                HStack(spacing: 12) {
+                                HStack(spacing: sizeClass == .regular ? 16 : 12) {
                                     Image(systemName: cat.icon)
-                                        .font(.title3)
+                                        .font(sizeClass == .regular ? .title2 : .title3)
                                         .foregroundColor(.white)
-                                        .frame(width: 44, height: 44)
+                                        .frame(width: sizeClass == .regular ? 56 : 44, height: sizeClass == .regular ? 56 : 44)
                                         .background(Color(red: 226/255, green: 15/255, blue: 30/255))
-                                        .cornerRadius(12)
+                                        .cornerRadius(sizeClass == .regular ? 14 : 12)
                                     Text(cat.name)
-                                        .font(.subheadline.bold())
+                                        .font(sizeClass == .regular ? .body.bold() : .subheadline.bold())
                                         .foregroundColor(.primary)
                                     Spacer()
                                     Image(systemName: "chevron.right")
                                         .foregroundColor(.secondary)
-                                        .font(.caption)
+                                        .font(sizeClass == .regular ? .subheadline : .caption)
                                 }
-                                .padding(12)
+                                .padding(sizeClass == .regular ? 16 : 12)
                                 .background(Color(.secondarySystemBackground))
                                 .cornerRadius(14)
                             }
                         }
                     }
-                    .padding(.horizontal)
+                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                 }
 
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: sizeClass == .regular ? 18 : 12) {
                     Text("Hurtig adgang")
-                        .font(.title2.bold())
-                        .padding(.horizontal)
+                        .font(sizeClass == .regular ? .title.bold() : .title2.bold())
+                        .padding(.horizontal, sizeClass == .regular ? 24 : 16)
 
-                    ForEach(quickActions, id: \.name) { action in
-                        Button(action: {
-                            let generator = UIImpactFeedbackGenerator(style: .light)
-                            generator.impactOccurred()
-                            onOpenURL(URL(string: "https://wromble.dk\(action.path)")!)
-                        }) {
-                            HStack(spacing: 14) {
-                                Image(systemName: action.icon)
-                                    .font(.title3)
-                                    .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
-                                    .frame(width: 32)
-                                Text(action.name)
-                                    .font(.body)
-                                    .foregroundColor(.primary)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .foregroundColor(.secondary)
-                                    .font(.caption)
+                    LazyVGrid(columns: sizeClass == .regular ? [GridItem(.adaptive(minimum: 300), spacing: 16)] : [GridItem(.flexible())], spacing: sizeClass == .regular ? 16 : 0) {
+                        ForEach(quickActions, id: \.name) { action in
+                            Button(action: {
+                                let generator = UIImpactFeedbackGenerator(style: .light)
+                                generator.impactOccurred()
+                                onOpenURL(URL(string: "https://wromble.dk\(action.path)")!)
+                            }) {
+                                HStack(spacing: sizeClass == .regular ? 18 : 14) {
+                                    Image(systemName: action.icon)
+                                        .font(sizeClass == .regular ? .title2 : .title3)
+                                        .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
+                                        .frame(width: sizeClass == .regular ? 40 : 32)
+                                    Text(action.name)
+                                        .font(sizeClass == .regular ? .title3 : .body)
+                                        .foregroundColor(.primary)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundColor(.secondary)
+                                        .font(sizeClass == .regular ? .subheadline : .caption)
+                                }
+                                .padding(.horizontal, sizeClass == .regular ? 20 : 16)
+                                .padding(.vertical, sizeClass == .regular ? 18 : 14)
+                                .background(Color(.secondarySystemBackground))
+                                .cornerRadius(12)
                             }
-                            .padding(.horizontal)
-                            .padding(.vertical, 14)
-                            .background(Color(.secondarySystemBackground))
-                            .cornerRadius(12)
+                            .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                         }
-                        .padding(.horizontal)
                     }
                 }
 
@@ -379,6 +410,7 @@ struct NearbyView: View {
 struct ProfileView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject var locationManager: LocationManager
+    @Environment(\.horizontalSizeClass) var sizeClass
     @State private var showBiometricAlert = false
     @State private var showShareSheet = false
     @State private var showAbout = false
@@ -386,19 +418,19 @@ struct ProfileView: View {
     var body: some View {
         List {
             Section {
-                HStack(spacing: 16) {
+                HStack(spacing: sizeClass == .regular ? 20 : 16) {
                     Image(systemName: "person.circle.fill")
-                        .font(.system(size: 50))
+                        .font(.system(size: sizeClass == .regular ? 64 : 50))
                         .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Wromble")
-                            .font(.title3.bold())
+                            .font(sizeClass == .regular ? .title2.bold() : .title3.bold())
                         Text("wromble.dk")
-                            .font(.subheadline)
+                            .font(sizeClass == .regular ? .body : .subheadline)
                             .foregroundColor(.secondary)
                     }
                 }
-                .padding(.vertical, 8)
+                .padding(.vertical, sizeClass == .regular ? 12 : 8)
             }
 
             Section(header: Text("Notifikationer")) {
@@ -492,7 +524,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.0 (2)")
+                    Text("1.0 (3)")
                         .foregroundColor(.secondary)
                 }
 
@@ -571,7 +603,9 @@ struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
+        let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        vc.popoverPresentationController?.sourceView = UIView()
+        return vc
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
@@ -598,6 +632,13 @@ struct WrombleWebView: UIViewRepresentable {
 
         let userController = WKUserContentController()
         userController.add(context.coordinator, name: "wrombleNative")
+
+        let viewportScript = WKUserScript(
+            source: "var meta = document.querySelector('meta[name=viewport]'); if (!meta) { meta = document.createElement('meta'); meta.name = 'viewport'; document.head.appendChild(meta); } meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes';",
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        )
+        userController.addUserScript(viewportScript)
         config.userContentController = userController
 
         let webView = WKWebView(frame: .zero, configuration: config)
@@ -607,6 +648,7 @@ struct WrombleWebView: UIViewRepresentable {
         webView.allowsBackForwardNavigationGestures = true
         webView.isOpaque = false
         webView.backgroundColor = .white
+        webView.scrollView.contentInsetAdjustmentBehavior = .automatic
 
         let refreshControl = UIRefreshControl()
         refreshControl.addTarget(context.coordinator, action: #selector(WebCoordinator.handleRefresh(_:)), for: .valueChanged)
@@ -659,9 +701,13 @@ struct WrombleWebView: UIViewRepresentable {
                 let url = body["url"] as? String ?? "https://wromble.dk/"
                 let items: [Any] = [text, URL(string: url)!]
                 let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
-                UIApplication.shared.connectedScenes
-                    .compactMap { $0 as? UIWindowScene }
-                    .first?.windows.first?.rootViewController?.present(vc, animated: true)
+                if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+                   let rootVC = scene.windows.first?.rootViewController {
+                    vc.popoverPresentationController?.sourceView = rootVC.view
+                    vc.popoverPresentationController?.sourceRect = CGRect(x: rootVC.view.bounds.midX, y: rootVC.view.bounds.midY, width: 0, height: 0)
+                    vc.popoverPresentationController?.permittedArrowDirections = []
+                    rootVC.present(vc, animated: true)
+                }
 
             case "haptic":
                 let style = body["style"] as? String ?? "light"
@@ -735,18 +781,20 @@ struct WrombleWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
             let ac = UIAlertController(title: nil, message: message, preferredStyle: .alert)
             ac.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
-            UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .first?.windows.first?.rootViewController?.present(ac, animated: true)
+            if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+               let rootVC = scene.windows.first?.rootViewController {
+                rootVC.present(ac, animated: true)
+            }
         }
 
         func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
             let ac = UIAlertController(title: nil, message: message, preferredStyle: .alert)
             ac.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
             ac.addAction(UIAlertAction(title: "Annuller", style: .cancel) { _ in completionHandler(false) })
-            UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .first?.windows.first?.rootViewController?.present(ac, animated: true)
+            if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+               let rootVC = scene.windows.first?.rootViewController {
+                rootVC.present(ac, animated: true)
+            }
         }
     }
 }
