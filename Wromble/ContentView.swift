@@ -4,12 +4,13 @@ import CoreLocation
 import LocalAuthentication
 import Network
 
+let wrombleRed = Color(red: 226/255, green: 15/255, blue: 30/255)
+let baseURL = "https://wromble.dk"
+
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @State private var showSplash = true
     @State private var selectedTab = 0
-    @State private var homeURL: URL? = URL(string: "https://wromble.dk/")
-    @State private var ordersURL: URL? = URL(string: "https://wromble.dk/private/orders/")
     @StateObject private var locationManager = LocationManager()
     @StateObject private var networkMonitor = NetworkMonitor()
 
@@ -17,6 +18,8 @@ struct ContentView: View {
         ZStack {
             if !appState.hasCompletedOnboarding {
                 OnboardingView()
+            } else if appState.biometricEnabled && !appState.isAuthenticated {
+                BiometricLockView()
             } else {
                 mainContent
             }
@@ -34,6 +37,9 @@ struct ContentView: View {
                 }
             }
             networkMonitor.start()
+            if !appState.biometricEnabled {
+                appState.isAuthenticated = true
+            }
         }
         .onChange(of: networkMonitor.isConnected) { newValue in
             appState.networkAvailable = newValue
@@ -42,62 +48,59 @@ struct ContentView: View {
 
     var mainContent: some View {
         ZStack {
-            TabView(selection: $selectedTab) {
-                NavigationStack {
-                    ZStack {
-                        WrombleWebView(url: $homeURL, locationManager: locationManager)
-                        if !appState.networkAvailable {
-                            OfflineView { homeURL = URL(string: "https://wromble.dk/") }
-                        }
+            if !appState.networkAvailable {
+                OfflineView { networkMonitor.start() }
+            } else {
+                TabView(selection: $selectedTab) {
+                    NavigationStack {
+                        HomeView(locationManager: locationManager)
                     }
-                    .navigationBarHidden(true)
-                }
-                .tabItem {
-                    Image(systemName: "house.fill")
-                    Text("Hjem")
-                }
-                .tag(0)
-
-                NavigationStack {
-                    NearbyView(locationManager: locationManager) { url in
-                        homeURL = url
-                        selectedTab = 0
+                    .tabItem {
+                        Image(systemName: "house.fill")
+                        Text("Hjem")
                     }
-                }
-                .tabItem {
-                    Image(systemName: "magnifyingglass")
-                    Text("Udforsk")
-                }
-                .tag(1)
+                    .tag(0)
 
-                NavigationStack {
-                    ZStack {
-                        WrombleWebView(url: $ordersURL, locationManager: locationManager)
-                        if !appState.networkAvailable {
-                            OfflineView { ordersURL = URL(string: "https://wromble.dk/private/orders/") }
-                        }
+                    NavigationStack {
+                        ExploreView(locationManager: locationManager)
                     }
-                    .navigationBarHidden(true)
-                }
-                .tabItem {
-                    Image(systemName: "bag.fill")
-                    Text("Ordrer")
-                }
-                .tag(2)
+                    .tabItem {
+                        Image(systemName: "magnifyingglass")
+                        Text("Udforsk")
+                    }
+                    .tag(1)
 
-                NavigationStack {
-                    ProfileView(locationManager: locationManager)
+                    NavigationStack {
+                        OrdersView()
+                    }
+                    .tabItem {
+                        Image(systemName: "bag.fill")
+                        Text("Ordrer")
+                    }
+                    .tag(2)
+
+                    NavigationStack {
+                        ChatView()
+                    }
+                    .tabItem {
+                        Image(systemName: "message.fill")
+                        Text("Chat")
+                    }
+                    .tag(3)
+
+                    NavigationStack {
+                        ProfileView(locationManager: locationManager)
+                    }
+                    .tabItem {
+                        Image(systemName: "person.fill")
+                        Text("Profil")
+                    }
+                    .tag(4)
                 }
-                .tabItem {
-                    Image(systemName: "person.fill")
-                    Text("Profil")
+                .accentColor(wrombleRed)
+                .onChange(of: selectedTab) { _ in
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }
-                .tag(3)
-            }
-            .accentColor(Color(red: 226/255, green: 15/255, blue: 30/255))
-            .onChange(of: selectedTab) { _ in
-                let generator = UIImpactFeedbackGenerator(style: .light)
-                generator.impactOccurred()
             }
         }
     }
@@ -119,7 +122,7 @@ struct SplashView: View {
                         .frame(width: logoSize(for: geo.size), height: logoSize(for: geo.size))
                     Text("Wromble")
                         .font(.system(size: sizeClass == .regular ? 44 : 32, weight: .heavy))
-                        .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
+                        .foregroundColor(wrombleRed)
                     Text("Nemt & Enkelt")
                         .font(.system(size: sizeClass == .regular ? 22 : 16, weight: .medium))
                         .foregroundColor(.gray)
@@ -132,6 +135,65 @@ struct SplashView: View {
     func logoSize(for size: CGSize) -> CGFloat {
         let shortest = min(size.width, size.height)
         return min(max(shortest * 0.3, 140), 320)
+    }
+}
+
+// MARK: - Biometric Lock
+
+struct BiometricLockView: View {
+    @EnvironmentObject var appState: AppState
+    @Environment(\.horizontalSizeClass) var sizeClass
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+            Image(systemName: biometricIcon)
+                .font(.system(size: sizeClass == .regular ? 80 : 60))
+                .foregroundColor(wrombleRed)
+            Text("Wromble er laast")
+                .font(sizeClass == .regular ? .title.bold() : .title2.bold())
+            Text("Brug \(biometricLabel) for at laase op")
+                .foregroundColor(.secondary)
+            Button(action: authenticate) {
+                Text("Laas op")
+                    .font(.headline)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 40)
+                    .padding(.vertical, 14)
+                    .background(wrombleRed)
+                    .cornerRadius(12)
+            }
+            Spacer()
+        }
+        .onAppear { authenticate() }
+    }
+
+    var biometricLabel: String {
+        let ctx = LAContext()
+        if ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) {
+            return ctx.biometryType == .faceID ? "Face ID" : "Touch ID"
+        }
+        return "biometri"
+    }
+
+    var biometricIcon: String {
+        let ctx = LAContext()
+        if ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) {
+            return ctx.biometryType == .faceID ? "faceid" : "touchid"
+        }
+        return "lock.shield.fill"
+    }
+
+    func authenticate() {
+        let ctx = LAContext()
+        var error: NSError?
+        if ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) {
+            ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Log ind med biometri") { success, _ in
+                DispatchQueue.main.async {
+                    if success { appState.isAuthenticated = true }
+                }
+            }
+        }
     }
 }
 
@@ -153,8 +215,7 @@ struct OfflineView: View {
                 .font(sizeClass == .regular ? .title3 : .body)
                 .foregroundColor(.secondary)
             Button(action: {
-                let generator = UINotificationFeedbackGenerator()
-                generator.notificationOccurred(.warning)
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
                 onRetry()
             }) {
                 Text("Proev igen")
@@ -162,7 +223,7 @@ struct OfflineView: View {
                     .foregroundColor(.white)
                     .padding(.horizontal, sizeClass == .regular ? 60 : 40)
                     .padding(.vertical, sizeClass == .regular ? 18 : 14)
-                    .background(Color(red: 226/255, green: 15/255, blue: 30/255))
+                    .background(wrombleRed)
                     .cornerRadius(12)
             }
             Spacer()
@@ -197,7 +258,7 @@ struct OnboardingView: View {
                                 Spacer()
                                 Image(systemName: pages[index].icon)
                                     .font(.system(size: iconSize(for: geo.size)))
-                                    .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
+                                    .foregroundColor(wrombleRed)
                                     .padding(.bottom, 10)
                                 Text(pages[index].title)
                                     .font(sizeClass == .regular ? .largeTitle.bold() : .title.bold())
@@ -215,8 +276,7 @@ struct OnboardingView: View {
                     .tabViewStyle(.page(indexDisplayMode: .always))
 
                     Button(action: {
-                        let generator = UIImpactFeedbackGenerator(style: .medium)
-                        generator.impactOccurred()
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         if currentPage < pages.count - 1 {
                             withAnimation { currentPage += 1 }
                         } else {
@@ -230,7 +290,7 @@ struct OnboardingView: View {
                             .foregroundColor(.white)
                             .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
                             .padding(.vertical, sizeClass == .regular ? 18 : 16)
-                            .background(Color(red: 226/255, green: 15/255, blue: 30/255))
+                            .background(wrombleRed)
                             .cornerRadius(14)
                     }
                     .padding(.horizontal, sizeClass == .regular ? 60 : 30)
@@ -258,26 +318,471 @@ struct OnboardingView: View {
     }
 }
 
-// MARK: - Nearby / Explore View (Native)
+// MARK: - Home View (Native)
 
-struct NearbyView: View {
+struct Restaurant: Identifiable, Codable {
+    let id: Int
+    let name: String
+    let alias: String
+    let type: Int
+    let type_label: String
+    let address: String
+    let lat: Double
+    let lng: Double
+    let image: String?
+    let categories: Int
+    let items: Int
+}
+
+struct HomeView: View {
     @ObservedObject var locationManager: LocationManager
     @EnvironmentObject var appState: AppState
     @Environment(\.horizontalSizeClass) var sizeClass
-    var onOpenURL: (URL) -> Void
+    @State private var restaurants: [Restaurant] = []
+    @State private var searchText = ""
+    @State private var selectedFilter = "Alle"
+    @State private var isLoading = true
 
-    let categories: [(name: String, icon: String, path: String)] = [
-        ("Restauranter", "fork.knife", "/category/spisesteder/"),
-        ("Butikker", "bag.fill", "/category/butikker/"),
-        ("Cafeer", "cup.and.saucer.fill", "/category/spisesteder/"),
-        ("Bagerier", "birthday.cake.fill", "/category/spisesteder/"),
+    let filters = ["Alle", "Restauranter", "Butikker"]
+
+    var filteredRestaurants: [Restaurant] {
+        var list = restaurants
+        if selectedFilter == "Restauranter" {
+            list = list.filter { $0.type == 2 }
+        } else if selectedFilter == "Butikker" {
+            list = list.filter { $0.type != 2 }
+        }
+        if !searchText.isEmpty {
+            list = list.filter { $0.name.localizedCaseInsensitiveContains(searchText) || $0.address.localizedCaseInsensitiveContains(searchText) }
+        }
+        return list
+    }
+
+    var gridColumns: [GridItem] {
+        if sizeClass == .regular {
+            return [GridItem(.adaptive(minimum: 300), spacing: 16)]
+        }
+        return [GridItem(.flexible())]
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                // Header
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Wromble")
+                        .font(.system(size: sizeClass == .regular ? 38 : 28, weight: .heavy))
+                        .foregroundColor(wrombleRed)
+                    Text("Hvad har du lyst til i dag?")
+                        .font(sizeClass == .regular ? .title3 : .subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                .padding(.top, 8)
+                .padding(.bottom, 16)
+
+                // Search
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                    TextField("Soeg restauranter, butikker...", text: $searchText)
+                        .font(sizeClass == .regular ? .body : .subheadline)
+                }
+                .padding(sizeClass == .regular ? 14 : 12)
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(12)
+                .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                .padding(.bottom, 16)
+
+                // Filter pills
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(filters, id: \.self) { filter in
+                            Button(action: {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                selectedFilter = filter
+                            }) {
+                                Text(filter)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundColor(selectedFilter == filter ? .white : .primary)
+                                    .padding(.horizontal, 18)
+                                    .padding(.vertical, 10)
+                                    .background(selectedFilter == filter ? wrombleRed : Color(.secondarySystemBackground))
+                                    .cornerRadius(20)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                }
+                .padding(.bottom, 20)
+
+                // Restaurant list
+                if isLoading {
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.2)
+                        Text("Henter restauranter...")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 60)
+                } else if filteredRestaurants.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 40))
+                            .foregroundColor(.secondary)
+                        Text("Ingen resultater")
+                            .font(.headline)
+                        Text("Proev et andet soegeord")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 60)
+                } else {
+                    LazyVGrid(columns: gridColumns, spacing: sizeClass == .regular ? 16 : 12) {
+                        ForEach(filteredRestaurants) { restaurant in
+                            NavigationLink(destination: RestaurantDetailView(restaurant: restaurant)) {
+                                RestaurantCard(restaurant: restaurant)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                }
+
+                Spacer(minLength: 40)
+            }
+        }
+        .navigationBarHidden(true)
+        .refreshable { await loadRestaurants() }
+        .task { await loadRestaurants() }
+    }
+
+    func loadRestaurants() async {
+        guard let url = URL(string: "\(baseURL)/api/restaurants.php") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            struct Response: Codable { let restaurants: [Restaurant] }
+            let response = try JSONDecoder().decode(Response.self, from: data)
+            await MainActor.run {
+                restaurants = response.restaurants
+                isLoading = false
+            }
+        } catch {
+            await MainActor.run { isLoading = false }
+        }
+    }
+}
+
+// MARK: - Restaurant Card
+
+struct RestaurantCard: View {
+    let restaurant: Restaurant
+    @Environment(\.horizontalSizeClass) var sizeClass
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Image
+            ZStack(alignment: .topTrailing) {
+                if let img = restaurant.image, !img.isEmpty {
+                    AsyncImage(url: URL(string: "\(baseURL)/uploads/\(img)")) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFill()
+                        default:
+                            restaurantPlaceholder
+                        }
+                    }
+                    .frame(height: sizeClass == .regular ? 180 : 140)
+                    .clipped()
+                } else {
+                    restaurantPlaceholder
+                        .frame(height: sizeClass == .regular ? 180 : 140)
+                }
+
+                Text(restaurant.type_label)
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(wrombleRed)
+                    .cornerRadius(8)
+                    .padding(10)
+            }
+
+            // Info
+            VStack(alignment: .leading, spacing: 6) {
+                Text(restaurant.name)
+                    .font(sizeClass == .regular ? .title3.weight(.bold) : .headline)
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+
+                HStack(spacing: 4) {
+                    Image(systemName: "mappin.circle.fill")
+                        .foregroundColor(wrombleRed)
+                        .font(.caption)
+                    Text(restaurant.address)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 12) {
+                    Label("\(restaurant.categories) kategorier", systemImage: "list.bullet")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Label("\(restaurant.items) varer", systemImage: "cart")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(sizeClass == .regular ? 14 : 12)
+        }
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(16)
+        .shadow(color: .black.opacity(0.06), radius: 8, y: 4)
+    }
+
+    var restaurantPlaceholder: some View {
+        ZStack {
+            Color(.tertiarySystemBackground)
+            Image(systemName: restaurant.type == 2 ? "fork.knife" : "bag.fill")
+                .font(.system(size: 36))
+                .foregroundColor(.secondary.opacity(0.4))
+        }
+    }
+}
+
+// MARK: - Restaurant Detail (Native)
+
+struct MenuCategory: Identifiable, Codable {
+    let id: Int
+    let name: String
+    let products: [MenuItem]
+}
+
+struct MenuItem: Identifiable, Codable {
+    let id: Int
+    let name: String
+    let description: String?
+    let price: Double
+    let image: String?
+    let extra_images: [String]?
+}
+
+struct RestaurantDetailView: View {
+    let restaurant: Restaurant
+    @Environment(\.horizontalSizeClass) var sizeClass
+    @State private var categories: [MenuCategory] = []
+    @State private var isLoading = true
+    @State private var showWebOrder = false
+
+    var body: some View {
+        Group {
+            if showWebOrder {
+                WebOrderView(restaurant: restaurant)
+            } else {
+                menuContent
+            }
+        }
+        .navigationTitle(restaurant.name)
+        .navigationBarTitleDisplayMode(.large)
+        .task { await loadMenu() }
+    }
+
+    var menuContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                // Header card
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(restaurant.type_label)
+                                .font(.caption.weight(.bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(wrombleRed)
+                                .cornerRadius(6)
+                            Text(restaurant.name)
+                                .font(sizeClass == .regular ? .title.bold() : .title2.bold())
+                        }
+                        Spacer()
+                    }
+                    HStack(spacing: 4) {
+                        Image(systemName: "mappin.circle.fill")
+                            .foregroundColor(wrombleRed)
+                        Text(restaurant.address)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(sizeClass == .regular ? 24 : 16)
+
+                // Order button
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    showWebOrder = true
+                }) {
+                    HStack {
+                        Image(systemName: "cart.fill")
+                        Text("Bestil nu")
+                            .font(.headline)
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(wrombleRed)
+                    .cornerRadius(12)
+                }
+                .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                .padding(.bottom, 20)
+
+                if isLoading {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 40)
+                } else if categories.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "menucard")
+                            .font(.system(size: 40))
+                            .foregroundColor(.secondary)
+                        Text("Ingen menukort endnu")
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+                } else {
+                    ForEach(categories) { category in
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(category.name)
+                                .font(sizeClass == .regular ? .title2.bold() : .title3.bold())
+                                .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                                .padding(.top, 12)
+
+                            ForEach(category.products) { item in
+                                MenuItemRow(item: item)
+                                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                            }
+                        }
+
+                        if category.id != categories.last?.id {
+                            Divider()
+                                .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                                .padding(.vertical, 8)
+                        }
+                    }
+                }
+
+                Spacer(minLength: 40)
+            }
+        }
+    }
+
+    func loadMenu() async {
+        guard let url = URL(string: "\(baseURL)/api/menu.php?company_id=\(restaurant.id)") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            struct Response: Codable {
+                let company: CompanyInfo?
+                let categories: [MenuCategory]
+                struct CompanyInfo: Codable { let id: Int; let name: String }
+            }
+            let response = try JSONDecoder().decode(Response.self, from: data)
+            await MainActor.run {
+                categories = response.categories
+                isLoading = false
+            }
+        } catch {
+            await MainActor.run { isLoading = false }
+        }
+    }
+}
+
+// MARK: - Menu Item Row
+
+struct MenuItemRow: View {
+    let item: MenuItem
+    @Environment(\.horizontalSizeClass) var sizeClass
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.name)
+                    .font(sizeClass == .regular ? .body.weight(.semibold) : .subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                if let desc = item.description, !desc.isEmpty {
+                    Text(desc)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+                Text(String(format: "%.2f kr", item.price))
+                    .font(.subheadline.weight(.bold))
+                    .foregroundColor(wrombleRed)
+            }
+
+            Spacer()
+
+            if let img = item.image, !img.isEmpty {
+                AsyncImage(url: URL(string: "\(baseURL)/uploads/\(img)")) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFill()
+                    default:
+                        Color(.tertiarySystemBackground)
+                    }
+                }
+                .frame(width: sizeClass == .regular ? 80 : 64, height: sizeClass == .regular ? 80 : 64)
+                .cornerRadius(10)
+                .clipped()
+            }
+        }
+        .padding(12)
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(12)
+    }
+}
+
+// MARK: - Web Order View (for checkout flow)
+
+struct WebOrderView: View {
+    let restaurant: Restaurant
+    @State private var orderURL: URL?
+
+    var body: some View {
+        WrombleWebView(url: $orderURL)
+            .navigationTitle("Bestil")
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                let alias = restaurant.alias.isEmpty ? "\(restaurant.id)" : restaurant.alias
+                orderURL = URL(string: "\(baseURL)/\(alias)/")
+            }
+    }
+}
+
+// MARK: - Explore View (Native)
+
+struct ExploreView: View {
+    @ObservedObject var locationManager: LocationManager
+    @EnvironmentObject var appState: AppState
+    @Environment(\.horizontalSizeClass) var sizeClass
+
+    let categories: [(name: String, icon: String, type: Int?)] = [
+        ("Alle", "square.grid.2x2.fill", nil),
+        ("Restauranter", "fork.knife", 2),
+        ("Butikker", "bag.fill", 1),
+        ("Cafeer", "cup.and.saucer.fill", 2),
+        ("Bagerier", "birthday.cake.fill", 2),
     ]
 
-    let quickActions: [(name: String, icon: String, path: String)] = [
-        ("Bordbestilling", "calendar.badge.clock", "/"),
-        ("Wromble+", "star.fill", "/"),
-        ("Bliv partner", "handshake.fill", "/bliv-partner.php"),
-        ("Support", "message.fill", "/contact/"),
+    let quickActions: [(name: String, icon: String, url: String)] = [
+        ("Bordbestilling", "calendar.badge.clock", "\(baseURL)/"),
+        ("Wromble+", "star.fill", "\(baseURL)/"),
+        ("Bliv partner", "handshake.fill", "\(baseURL)/bliv-partner.php"),
     ]
 
     var gridColumns: [GridItem] {
@@ -293,7 +798,7 @@ struct NearbyView: View {
                 if let loc = locationManager.location {
                     HStack(spacing: 8) {
                         Image(systemName: "location.fill")
-                            .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
+                            .foregroundColor(wrombleRed)
                         Text("Din placering fundet")
                             .font(sizeClass == .regular ? .body : .subheadline)
                             .foregroundColor(.secondary)
@@ -316,7 +821,7 @@ struct NearbyView: View {
                             }
                         }
                         .font(sizeClass == .regular ? .body.bold() : .subheadline.bold())
-                        .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
+                        .foregroundColor(wrombleRed)
                     }
                     .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                 }
@@ -328,30 +833,24 @@ struct NearbyView: View {
 
                     LazyVGrid(columns: gridColumns, spacing: sizeClass == .regular ? 16 : 12) {
                         ForEach(categories, id: \.name) { cat in
-                            Button(action: {
-                                let generator = UIImpactFeedbackGenerator(style: .medium)
-                                generator.impactOccurred()
-                                onOpenURL(URL(string: "https://wromble.dk\(cat.path)")!)
-                            }) {
-                                HStack(spacing: sizeClass == .regular ? 16 : 12) {
-                                    Image(systemName: cat.icon)
-                                        .font(sizeClass == .regular ? .title2 : .title3)
-                                        .foregroundColor(.white)
-                                        .frame(width: sizeClass == .regular ? 56 : 44, height: sizeClass == .regular ? 56 : 44)
-                                        .background(Color(red: 226/255, green: 15/255, blue: 30/255))
-                                        .cornerRadius(sizeClass == .regular ? 14 : 12)
-                                    Text(cat.name)
-                                        .font(sizeClass == .regular ? .body.bold() : .subheadline.bold())
-                                        .foregroundColor(.primary)
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .foregroundColor(.secondary)
-                                        .font(sizeClass == .regular ? .subheadline : .caption)
-                                }
-                                .padding(sizeClass == .regular ? 16 : 12)
-                                .background(Color(.secondarySystemBackground))
-                                .cornerRadius(14)
+                            HStack(spacing: sizeClass == .regular ? 16 : 12) {
+                                Image(systemName: cat.icon)
+                                    .font(sizeClass == .regular ? .title2 : .title3)
+                                    .foregroundColor(.white)
+                                    .frame(width: sizeClass == .regular ? 56 : 44, height: sizeClass == .regular ? 56 : 44)
+                                    .background(wrombleRed)
+                                    .cornerRadius(sizeClass == .regular ? 14 : 12)
+                                Text(cat.name)
+                                    .font(sizeClass == .regular ? .body.bold() : .subheadline.bold())
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundColor(.secondary)
+                                    .font(sizeClass == .regular ? .subheadline : .caption)
                             }
+                            .padding(sizeClass == .regular ? 16 : 12)
+                            .background(Color(.secondarySystemBackground))
+                            .cornerRadius(14)
                         }
                     }
                     .padding(.horizontal, sizeClass == .regular ? 24 : 16)
@@ -364,29 +863,23 @@ struct NearbyView: View {
 
                     LazyVGrid(columns: sizeClass == .regular ? [GridItem(.adaptive(minimum: 300), spacing: 16)] : [GridItem(.flexible())], spacing: sizeClass == .regular ? 16 : 0) {
                         ForEach(quickActions, id: \.name) { action in
-                            Button(action: {
-                                let generator = UIImpactFeedbackGenerator(style: .light)
-                                generator.impactOccurred()
-                                onOpenURL(URL(string: "https://wromble.dk\(action.path)")!)
-                            }) {
-                                HStack(spacing: sizeClass == .regular ? 18 : 14) {
-                                    Image(systemName: action.icon)
-                                        .font(sizeClass == .regular ? .title2 : .title3)
-                                        .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
-                                        .frame(width: sizeClass == .regular ? 40 : 32)
-                                    Text(action.name)
-                                        .font(sizeClass == .regular ? .title3 : .body)
-                                        .foregroundColor(.primary)
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .foregroundColor(.secondary)
-                                        .font(sizeClass == .regular ? .subheadline : .caption)
-                                }
-                                .padding(.horizontal, sizeClass == .regular ? 20 : 16)
-                                .padding(.vertical, sizeClass == .regular ? 18 : 14)
-                                .background(Color(.secondarySystemBackground))
-                                .cornerRadius(12)
+                            HStack(spacing: sizeClass == .regular ? 18 : 14) {
+                                Image(systemName: action.icon)
+                                    .font(sizeClass == .regular ? .title2 : .title3)
+                                    .foregroundColor(wrombleRed)
+                                    .frame(width: sizeClass == .regular ? 40 : 32)
+                                Text(action.name)
+                                    .font(sizeClass == .regular ? .title3 : .body)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundColor(.secondary)
+                                    .font(sizeClass == .regular ? .subheadline : .caption)
                             }
+                            .padding(.horizontal, sizeClass == .regular ? 20 : 16)
+                            .padding(.vertical, sizeClass == .regular ? 18 : 14)
+                            .background(Color(.secondarySystemBackground))
+                            .cornerRadius(12)
                             .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                         }
                     }
@@ -405,6 +898,334 @@ struct NearbyView: View {
     }
 }
 
+// MARK: - Orders View (Native)
+
+struct OrdersView: View {
+    @EnvironmentObject var appState: AppState
+    @Environment(\.horizontalSizeClass) var sizeClass
+    @State private var orderURL: URL? = URL(string: "\(baseURL)/private/orders/")
+
+    var body: some View {
+        WrombleWebView(url: $orderURL)
+            .navigationTitle("Ordrer")
+            .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Chat View (Native)
+
+struct ChatMessage: Identifiable {
+    let id: Int
+    let senderType: String
+    let senderName: String
+    let message: String
+    let fileURL: String?
+    let fileType: String?
+    let fileName: String?
+    let createdAt: String
+}
+
+class ChatViewModel: ObservableObject {
+    @Published var messages: [ChatMessage] = []
+    @Published var conversationId: Int = 0
+    @Published var status: String = "open"
+    @Published var isStarted = false
+    @Published var isLoading = false
+
+    private var pollTimer: Timer?
+    private var lastMessageId = 0
+
+    func startConversation(name: String, email: String) {
+        isLoading = true
+        guard let url = URL(string: "\(baseURL)/api/chat-start.php") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: String] = ["name": name, "email": email]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let convId = json["conversation_id"] as? Int else {
+                DispatchQueue.main.async { self?.isLoading = false }
+                return
+            }
+            DispatchQueue.main.async {
+                self?.conversationId = convId
+                self?.isStarted = true
+                self?.isLoading = false
+                self?.startPolling()
+            }
+        }.resume()
+    }
+
+    func sendMessage(_ text: String, senderName: String) {
+        guard conversationId > 0, !text.isEmpty else { return }
+        guard let url = URL(string: "\(baseURL)/api/chat-send.php") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "conversation_id": conversationId,
+            "sender_type": "customer",
+            "sender_name": senderName,
+            "message": text
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
+    }
+
+    func startPolling() {
+        pollTimer?.invalidate()
+        poll()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+            self?.poll()
+        }
+    }
+
+    func stopPolling() {
+        pollTimer?.invalidate()
+        pollTimer = nil
+    }
+
+    private func poll() {
+        guard conversationId > 0 else { return }
+        guard let url = URL(string: "\(baseURL)/api/chat-poll.php?conversation_id=\(conversationId)&after=\(lastMessageId)") else { return }
+
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let msgsArray = json["messages"] as? [[String: Any]] else { return }
+
+            let newStatus = json["status"] as? String ?? "open"
+            var newMessages: [ChatMessage] = []
+            for msg in msgsArray {
+                let cm = ChatMessage(
+                    id: msg["id"] as? Int ?? 0,
+                    senderType: msg["sender_type"] as? String ?? "",
+                    senderName: msg["sender_name"] as? String ?? "",
+                    message: msg["message"] as? String ?? "",
+                    fileURL: msg["file_url"] as? String,
+                    fileType: msg["file_type"] as? String,
+                    fileName: msg["file_name"] as? String,
+                    createdAt: msg["created_at"] as? String ?? ""
+                )
+                newMessages.append(cm)
+            }
+
+            DispatchQueue.main.async {
+                self?.status = newStatus
+                if !newMessages.isEmpty {
+                    self?.messages.append(contentsOf: newMessages)
+                    self?.lastMessageId = newMessages.last?.id ?? self?.lastMessageId ?? 0
+                }
+            }
+        }.resume()
+    }
+}
+
+struct ChatView: View {
+    @Environment(\.horizontalSizeClass) var sizeClass
+    @StateObject private var viewModel = ChatViewModel()
+    @State private var nameInput = ""
+    @State private var emailInput = ""
+    @State private var messageInput = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if !viewModel.isStarted {
+                chatStartForm
+            } else {
+                chatMessages
+                if viewModel.status == "open" {
+                    chatInputBar
+                } else {
+                    closedBanner
+                }
+            }
+        }
+        .navigationTitle("Kundeservice")
+        .navigationBarTitleDisplayMode(.inline)
+        .onDisappear { viewModel.stopPolling() }
+    }
+
+    var chatStartForm: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            Image(systemName: "message.badge.fill")
+                .font(.system(size: sizeClass == .regular ? 70 : 50))
+                .foregroundColor(wrombleRed)
+
+            Text("Kontakt Kundeservice")
+                .font(sizeClass == .regular ? .title.bold() : .title2.bold())
+
+            Text("Vi svarer hurtigst muligt")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+
+            VStack(spacing: 12) {
+                TextField("Dit navn", text: $nameInput)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body)
+
+                TextField("E-mail (valgfrit)", text: $emailInput)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body)
+                    .keyboardType(.emailAddress)
+                    .textContentType(.emailAddress)
+                    .autocapitalization(.none)
+            }
+            .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
+            .padding(.horizontal, sizeClass == .regular ? 60 : 30)
+
+            Button(action: {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                viewModel.startConversation(name: nameInput, email: emailInput)
+            }) {
+                if viewModel.isLoading {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Text("Start chat")
+                        .font(.headline)
+                }
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
+            .padding(.vertical, 14)
+            .background(nameInput.isEmpty ? Color.gray : wrombleRed)
+            .cornerRadius(12)
+            .padding(.horizontal, sizeClass == .regular ? 60 : 30)
+            .disabled(nameInput.isEmpty || viewModel.isLoading)
+
+            Spacer()
+        }
+    }
+
+    var chatMessages: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(viewModel.messages) { msg in
+                        chatBubble(msg)
+                            .id(msg.id)
+                    }
+                }
+                .padding(sizeClass == .regular ? 20 : 14)
+            }
+            .onChange(of: viewModel.messages.count) { _ in
+                if let last = viewModel.messages.last {
+                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+            }
+        }
+    }
+
+    func chatBubble(_ msg: ChatMessage) -> some View {
+        let isCustomer = msg.senderType == "customer"
+        return HStack {
+            if isCustomer { Spacer(minLength: 60) }
+            VStack(alignment: isCustomer ? .trailing : .leading, spacing: 4) {
+                if !isCustomer {
+                    Text(msg.senderName)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.secondary)
+                }
+                Text(msg.message)
+                    .font(.body)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(isCustomer ? wrombleRed : Color(.secondarySystemBackground))
+                    .foregroundColor(isCustomer ? .white : .primary)
+                    .cornerRadius(16)
+
+                if let fileURL = msg.fileURL, !fileURL.isEmpty {
+                    if msg.fileType == "image" {
+                        AsyncImage(url: URL(string: "\(baseURL)\(fileURL)")) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image.resizable().scaledToFit()
+                                    .frame(maxWidth: 200, maxHeight: 150)
+                                    .cornerRadius(10)
+                            default:
+                                ProgressView()
+                            }
+                        }
+                    }
+                }
+            }
+            if !isCustomer { Spacer(minLength: 60) }
+        }
+    }
+
+    var chatInputBar: some View {
+        HStack(spacing: 10) {
+            TextField("Skriv en besked...", text: $messageInput)
+                .textFieldStyle(.roundedBorder)
+                .font(.body)
+                .onSubmit { send() }
+
+            Button(action: send) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 32))
+                    .foregroundColor(messageInput.isEmpty ? .gray : wrombleRed)
+            }
+            .disabled(messageInput.isEmpty)
+        }
+        .padding(.horizontal, sizeClass == .regular ? 20 : 14)
+        .padding(.vertical, 10)
+        .background(Color(.systemBackground))
+        .overlay(Divider(), alignment: .top)
+    }
+
+    var closedBanner: some View {
+        VStack(spacing: 10) {
+            Text("Denne samtale er lukket")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            Button(action: {
+                viewModel.stopPolling()
+                viewModel.messages = []
+                viewModel.conversationId = 0
+                viewModel.isStarted = false
+                viewModel.status = "open"
+            }) {
+                Text("Start ny samtale")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 10)
+                    .background(wrombleRed)
+                    .cornerRadius(10)
+            }
+        }
+        .padding()
+        .background(Color(.systemBackground))
+        .overlay(Divider(), alignment: .top)
+    }
+
+    func send() {
+        let text = messageInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        viewModel.sendMessage(text, senderName: nameInput)
+        let localMsg = ChatMessage(
+            id: (viewModel.messages.last?.id ?? 0) + 1,
+            senderType: "customer",
+            senderName: nameInput,
+            message: text,
+            fileURL: nil,
+            fileType: nil,
+            fileName: nil,
+            createdAt: ""
+        )
+        viewModel.messages.append(localMsg)
+        messageInput = ""
+    }
+}
+
 // MARK: - Profile View (Fully Native)
 
 struct ProfileView: View {
@@ -413,7 +1234,6 @@ struct ProfileView: View {
     @Environment(\.horizontalSizeClass) var sizeClass
     @State private var showBiometricAlert = false
     @State private var showShareSheet = false
-    @State private var showAbout = false
 
     var body: some View {
         List {
@@ -421,7 +1241,7 @@ struct ProfileView: View {
                 HStack(spacing: sizeClass == .regular ? 20 : 16) {
                     Image(systemName: "person.circle.fill")
                         .font(.system(size: sizeClass == .regular ? 64 : 50))
-                        .foregroundColor(Color(red: 226/255, green: 15/255, blue: 30/255))
+                        .foregroundColor(wrombleRed)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Wromble")
                             .font(sizeClass == .regular ? .title2.bold() : .title3.bold())
@@ -437,7 +1257,7 @@ struct ProfileView: View {
                 Toggle(isOn: $appState.notificationsEnabled) {
                     Label("Push-notifikationer", systemImage: "bell.badge.fill")
                 }
-                .tint(Color(red: 226/255, green: 15/255, blue: 30/255))
+                .tint(wrombleRed)
                 .onChange(of: appState.notificationsEnabled) { newValue in
                     if newValue {
                         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
@@ -453,8 +1273,7 @@ struct ProfileView: View {
                     } else {
                         appState.save()
                     }
-                    let generator = UIImpactFeedbackGenerator(style: .light)
-                    generator.impactOccurred()
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }
             }
 
@@ -462,14 +1281,11 @@ struct ProfileView: View {
                 Toggle(isOn: $appState.locationEnabled) {
                     Label("Brug placering", systemImage: "location.fill")
                 }
-                .tint(Color(red: 226/255, green: 15/255, blue: 30/255))
+                .tint(wrombleRed)
                 .onChange(of: appState.locationEnabled) { newValue in
-                    if newValue {
-                        locationManager.requestLocation()
-                    }
+                    if newValue { locationManager.requestLocation() }
                     appState.save()
-                    let generator = UIImpactFeedbackGenerator(style: .light)
-                    generator.impactOccurred()
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }
 
                 if let loc = locationManager.location {
@@ -488,33 +1304,24 @@ struct ProfileView: View {
                 Toggle(isOn: $appState.biometricEnabled) {
                     Label(biometricLabel, systemImage: biometricIcon)
                 }
-                .tint(Color(red: 226/255, green: 15/255, blue: 30/255))
+                .tint(wrombleRed)
                 .onChange(of: appState.biometricEnabled) { newValue in
-                    if newValue {
-                        authenticateBiometric()
-                    }
+                    if newValue { authenticateBiometric() }
                     appState.save()
-                    let generator = UIImpactFeedbackGenerator(style: .light)
-                    generator.impactOccurred()
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }
             }
 
             Section(header: Text("Del & Support")) {
                 Button(action: {
                     showShareSheet = true
-                    let generator = UIImpactFeedbackGenerator(style: .light)
-                    generator.impactOccurred()
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }) {
                     Label("Del Wromble med venner", systemImage: "square.and.arrow.up")
                         .foregroundColor(.primary)
                 }
 
-                Link(destination: URL(string: "https://wromble.dk/contact/")!) {
-                    Label("Kontakt support", systemImage: "envelope.fill")
-                        .foregroundColor(.primary)
-                }
-
-                Link(destination: URL(string: "https://wromble.dk/privacy-policy/app.php")!) {
+                Link(destination: URL(string: "\(baseURL)/privacy-policy/app.php")!) {
                     Label("Privatlivspolitik", systemImage: "hand.raised.fill")
                         .foregroundColor(.primary)
                 }
@@ -524,7 +1331,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.0 (4)")
+                    Text("1.0 (5)")
                         .foregroundColor(.secondary)
                 }
 
@@ -550,7 +1357,7 @@ struct ProfileView: View {
         .navigationTitle("Profil")
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(items: [
-                "Proev Wromble - bestil mad og specialvarer fra lokale butikker! Download her: https://wromble.dk/"
+                "Proev Wromble - bestil mad og specialvarer fra lokale butikker! Download her: https://apps.apple.com/dk/app/wromble/id6778496033"
             ])
         }
         .alert("Biometrisk login", isPresented: $showBiometricAlert) {
@@ -564,26 +1371,26 @@ struct ProfileView: View {
     }
 
     var biometricLabel: String {
-        let context = LAContext()
-        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) {
-            return context.biometryType == .faceID ? "Face ID" : "Touch ID"
+        let ctx = LAContext()
+        if ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) {
+            return ctx.biometryType == .faceID ? "Face ID" : "Touch ID"
         }
         return "Biometrisk login"
     }
 
     var biometricIcon: String {
-        let context = LAContext()
-        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) {
-            return context.biometryType == .faceID ? "faceid" : "touchid"
+        let ctx = LAContext()
+        if ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) {
+            return ctx.biometryType == .faceID ? "faceid" : "touchid"
         }
         return "lock.shield.fill"
     }
 
     func authenticateBiometric() {
-        let context = LAContext()
+        let ctx = LAContext()
         var error: NSError?
-        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) {
-            context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Log ind med biometri") { success, _ in
+        if ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) {
+            ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Log ind med biometri") { success, _ in
                 DispatchQueue.main.async {
                     if !success {
                         appState.biometricEnabled = false
@@ -611,14 +1418,13 @@ struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
-// MARK: - WebView
+// MARK: - WebView (kept for ordering flow)
 
 struct WrombleWebView: UIViewRepresentable {
     @Binding var url: URL?
-    @ObservedObject var locationManager: LocationManager
 
     func makeCoordinator() -> WebCoordinator {
-        WebCoordinator(locationManager: locationManager)
+        WebCoordinator()
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -631,8 +1437,6 @@ struct WrombleWebView: UIViewRepresentable {
         config.defaultWebpagePreferences = prefs
 
         let userController = WKUserContentController()
-        userController.add(context.coordinator, name: "wrombleNative")
-
         let viewportScript = WKUserScript(
             source: "var meta = document.querySelector('meta[name=viewport]'); if (!meta) { meta = document.createElement('meta'); meta.name = 'viewport'; document.head.appendChild(meta); } meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes';",
             injectionTime: .atDocumentEnd,
@@ -660,12 +1464,6 @@ struct WrombleWebView: UIViewRepresentable {
             webView.load(URLRequest(url: url))
         }
 
-        NotificationCenter.default.addObserver(forName: .init("OpenURL"), object: nil, queue: .main) { notification in
-            if let url = notification.object as? URL {
-                webView.load(URLRequest(url: url))
-            }
-        }
-
         return webView
     }
 
@@ -675,67 +1473,14 @@ struct WrombleWebView: UIViewRepresentable {
         }
     }
 
-    class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         weak var webView: WKWebView?
-        var locationManager: LocationManager
-
-        init(locationManager: LocationManager) {
-            self.locationManager = locationManager
-        }
 
         @objc func handleRefresh(_ refreshControl: UIRefreshControl) {
-            let generator = UIImpactFeedbackGenerator(style: .medium)
-            generator.impactOccurred()
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             webView?.reload()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 refreshControl.endRefreshing()
-            }
-        }
-
-        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard let body = message.body as? [String: Any], let action = body["action"] as? String else { return }
-
-            switch action {
-            case "share":
-                let text = body["text"] as? String ?? "Tjek Wromble ud!"
-                let url = body["url"] as? String ?? "https://wromble.dk/"
-                let items: [Any] = [text, URL(string: url)!]
-                let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
-                if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
-                   let rootVC = scene.windows.first?.rootViewController {
-                    vc.popoverPresentationController?.sourceView = rootVC.view
-                    vc.popoverPresentationController?.sourceRect = CGRect(x: rootVC.view.bounds.midX, y: rootVC.view.bounds.midY, width: 0, height: 0)
-                    vc.popoverPresentationController?.permittedArrowDirections = []
-                    rootVC.present(vc, animated: true)
-                }
-
-            case "haptic":
-                let style = body["style"] as? String ?? "light"
-                switch style {
-                case "medium": UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                case "heavy": UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
-                case "success": UINotificationFeedbackGenerator().notificationOccurred(.success)
-                case "error": UINotificationFeedbackGenerator().notificationOccurred(.error)
-                default: UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                }
-
-            case "getLocation":
-                if let loc = locationManager.location {
-                    let js = "window.wrombleLocation = {lat: \(loc.coordinate.latitude), lng: \(loc.coordinate.longitude)}; if(window.onWrombleLocation) window.onWrombleLocation(window.wrombleLocation);"
-                    webView?.evaluateJavaScript(js)
-                }
-
-            default:
-                break
-            }
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            if let loc = locationManager.location {
-                let js = "window.wrombleNative = true; window.wrombleLocation = {lat: \(loc.coordinate.latitude), lng: \(loc.coordinate.longitude)};"
-                webView.evaluateJavaScript(js)
-            } else {
-                webView.evaluateJavaScript("window.wrombleNative = true;")
             }
         }
 
@@ -758,7 +1503,6 @@ struct WrombleWebView: UIViewRepresentable {
                 return
             }
 
-            // OAuth / auth flows must stay in-app
             let authDomains = ["facebook.com", "fbcdn.net", "facebook.net",
                                "google.com", "googleapis.com", "gstatic.com",
                                "apple.com", "icloud.com",
