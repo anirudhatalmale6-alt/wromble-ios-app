@@ -3,11 +3,12 @@ import WebKit
 import CoreLocation
 import LocalAuthentication
 import Network
+import MapKit
 
 let wrombleRed = Color(red: 226/255, green: 15/255, blue: 30/255)
 let baseURL = "https://wromble.dk"
 
-// MARK: - User Model
+// MARK: - Models
 
 struct UserProfile: Codable {
     let id: Int
@@ -15,6 +16,137 @@ struct UserProfile: Codable {
     let email: String
     let phone: String?
     let type: String
+}
+
+struct Restaurant: Identifiable, Codable, Hashable {
+    let id: Int
+    let name: String
+    let alias: String
+    let type: Int
+    let type_label: String
+    let address: String
+    let lat: Double
+    let lng: Double
+    let image: String?
+    let categories: Int
+    let items: Int
+
+    static func == (lhs: Restaurant, rhs: Restaurant) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+struct MenuCategory: Identifiable, Codable {
+    let id: Int
+    let name: String
+    let products: [MenuItem]
+}
+
+struct MenuItem: Identifiable, Codable {
+    let id: Int
+    let name: String
+    let description: String?
+    let price: Double
+    let image: String?
+    let extra_images: [String]?
+}
+
+struct CartItem: Identifiable {
+    let id: Int
+    let name: String
+    let price: Double
+    var quantity: Int
+}
+
+struct Order: Identifiable {
+    let id: Int
+    let companyName: String
+    let date: String
+    let total: Double
+    let status: String
+    let items: [OrderItem]
+}
+
+struct OrderItem {
+    let name: String
+    let quantity: Int
+    let price: Double
+}
+
+struct ChatMessage: Identifiable {
+    let id: Int
+    let senderType: String
+    let senderName: String
+    let message: String
+    let fileURL: String?
+    let fileType: String?
+    let fileName: String?
+    let createdAt: String
+}
+
+// MARK: - Favorites Manager
+
+class FavoritesManager: ObservableObject {
+    static let shared = FavoritesManager()
+    @Published var favoriteIds: Set<Int> = []
+
+    init() {
+        if let saved = UserDefaults.standard.array(forKey: "favoriteRestaurants") as? [Int] {
+            favoriteIds = Set(saved)
+        }
+    }
+
+    func toggle(_ id: Int) {
+        if favoriteIds.contains(id) {
+            favoriteIds.remove(id)
+        } else {
+            favoriteIds.insert(id)
+        }
+        UserDefaults.standard.set(Array(favoriteIds), forKey: "favoriteRestaurants")
+    }
+
+    func isFavorite(_ id: Int) -> Bool { favoriteIds.contains(id) }
+}
+
+// MARK: - Cart Manager
+
+class CartManager: ObservableObject {
+    static let shared = CartManager()
+    @Published var items: [CartItem] = []
+    @Published var restaurantId: Int = 0
+    @Published var restaurantName: String = ""
+
+    var total: Double { items.reduce(0) { $0 + $1.price * Double($1.quantity) } }
+    var itemCount: Int { items.reduce(0) { $0 + $1.quantity } }
+
+    func addItem(_ item: MenuItem, forRestaurant rid: Int, name rname: String) {
+        if restaurantId != rid && restaurantId != 0 {
+            items.removeAll()
+        }
+        restaurantId = rid
+        restaurantName = rname
+        if let idx = items.firstIndex(where: { $0.id == item.id }) {
+            items[idx].quantity += 1
+        } else {
+            items.append(CartItem(id: item.id, name: item.name, price: item.price, quantity: 1))
+        }
+    }
+
+    func removeItem(_ id: Int) {
+        if let idx = items.firstIndex(where: { $0.id == id }) {
+            if items[idx].quantity > 1 {
+                items[idx].quantity -= 1
+            } else {
+                items.remove(at: idx)
+                if items.isEmpty { restaurantId = 0; restaurantName = "" }
+            }
+        }
+    }
+
+    func clear() {
+        items.removeAll()
+        restaurantId = 0
+        restaurantName = ""
+    }
 }
 
 // MARK: - Root View
@@ -35,7 +167,6 @@ struct ContentView: View {
             } else {
                 mainContent
             }
-
             if showSplash {
                 SplashView()
                     .transition(.opacity)
@@ -44,14 +175,10 @@ struct ContentView: View {
         }
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                withAnimation(.easeOut(duration: 0.5)) {
-                    showSplash = false
-                }
+                withAnimation(.easeOut(duration: 0.5)) { showSplash = false }
             }
             networkMonitor.start()
-            if !appState.biometricEnabled {
-                appState.isAuthenticated = true
-            }
+            if !appState.biometricEnabled { appState.isAuthenticated = true }
         }
         .onChange(of: networkMonitor.isConnected) { newValue in
             appState.networkAvailable = newValue
@@ -67,46 +194,31 @@ struct ContentView: View {
                     NavigationStack {
                         HomeView(locationManager: locationManager)
                     }
-                    .tabItem {
-                        Image(systemName: "house.fill")
-                        Text("Hjem")
-                    }
+                    .tabItem { Image(systemName: "house.fill"); Text("Hjem") }
                     .tag(0)
 
                     NavigationStack {
-                        ExploreView(locationManager: locationManager)
+                        MapTabView(locationManager: locationManager)
                     }
-                    .tabItem {
-                        Image(systemName: "magnifyingglass")
-                        Text("Udforsk")
-                    }
+                    .tabItem { Image(systemName: "map.fill"); Text("Kort") }
                     .tag(1)
 
                     NavigationStack {
                         OrdersView()
                     }
-                    .tabItem {
-                        Image(systemName: "bag.fill")
-                        Text("Ordrer")
-                    }
+                    .tabItem { Image(systemName: "bag.fill"); Text("Ordrer") }
                     .tag(2)
 
                     NavigationStack {
                         ChatView()
                     }
-                    .tabItem {
-                        Image(systemName: "message.fill")
-                        Text("Chat")
-                    }
+                    .tabItem { Image(systemName: "message.fill"); Text("Chat") }
                     .tag(3)
 
                     NavigationStack {
                         ProfileView(locationManager: locationManager)
                     }
-                    .tabItem {
-                        Image(systemName: "person.fill")
-                        Text("Profil")
-                    }
+                    .tabItem { Image(systemName: "person.fill"); Text("Profil") }
                     .tag(4)
                 }
                 .accentColor(wrombleRed)
@@ -201,9 +313,7 @@ struct BiometricLockView: View {
         var error: NSError?
         if ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) {
             ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Log ind med biometri") { success, _ in
-                DispatchQueue.main.async {
-                    if success { appState.isAuthenticated = true }
-                }
+                DispatchQueue.main.async { if success { appState.isAuthenticated = true } }
             }
         }
     }
@@ -256,7 +366,7 @@ struct OnboardingView: View {
         ("fork.knife", "Bestil mad", "Find restauranter i naerheden og faa maden leveret til doeren"),
         ("bag.fill", "Shop lokalt", "Koeb specialvarer fra butikker i dit omraade"),
         ("bell.badge.fill", "Hold dig opdateret", "Faa besked naar din ordre er paa vej"),
-        ("location.fill", "Find naerliggende", "Vi finder de bedste steder taet paa dig"),
+        ("map.fill", "Find naerliggende", "Se restauranter og butikker paa kortet"),
     ]
 
     var body: some View {
@@ -330,7 +440,7 @@ struct OnboardingView: View {
     }
 }
 
-// MARK: - Login View (Native)
+// MARK: - Login View
 
 struct LoginView: View {
     @EnvironmentObject var appState: AppState
@@ -349,20 +459,14 @@ struct LoginView: View {
         ScrollView {
             VStack(spacing: sizeClass == .regular ? 28 : 20) {
                 Spacer(minLength: sizeClass == .regular ? 40 : 20)
-
                 Image("SplashLogo")
-                    .resizable()
-                    .scaledToFit()
+                    .resizable().scaledToFit()
                     .frame(width: sizeClass == .regular ? 100 : 70, height: sizeClass == .regular ? 100 : 70)
-
                 Text(isLogin ? "Log ind" : "Opret konto")
                     .font(sizeClass == .regular ? .largeTitle.bold() : .title.bold())
-
                 Text(isLogin ? "Log ind med din Wromble konto" : "Opret en gratis Wromble konto")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .font(.subheadline).foregroundColor(.secondary)
 
-                // Segment picker
                 Picker("", selection: $isLogin) {
                     Text("Log ind").tag(true)
                     Text("Opret konto").tag(false)
@@ -376,16 +480,11 @@ struct LoginView: View {
                             inputField("Fornavn", text: $firstname, icon: "person.fill")
                             inputField("Efternavn", text: $lastname, icon: "person.fill")
                         }
-
                         inputField("Telefon (valgfrit)", text: $phone, icon: "phone.fill", keyboard: .phonePad)
                     }
-
                     inputField("Email", text: $email, icon: "envelope.fill", keyboard: .emailAddress, autocap: false)
-
                     HStack(spacing: 12) {
-                        Image(systemName: "lock.fill")
-                            .foregroundColor(.secondary)
-                            .frame(width: 20)
+                        Image(systemName: "lock.fill").foregroundColor(.secondary).frame(width: 20)
                         SecureField("Adgangskode", text: $password)
                             .textContentType(isLogin ? .password : .newPassword)
                     }
@@ -396,10 +495,7 @@ struct LoginView: View {
                 .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
 
                 if !errorMessage.isEmpty {
-                    Text(errorMessage)
-                        .font(.subheadline)
-                        .foregroundColor(.red)
-                        .multilineTextAlignment(.center)
+                    Text(errorMessage).font(.subheadline).foregroundColor(.red).multilineTextAlignment(.center)
                 }
 
                 Button(action: {
@@ -407,12 +503,8 @@ struct LoginView: View {
                     if isLogin { doLogin() } else { doRegister() }
                 }) {
                     Group {
-                        if isLoading {
-                            ProgressView().tint(.white)
-                        } else {
-                            Text(isLogin ? "Log ind" : "Opret konto")
-                                .font(.headline)
-                        }
+                        if isLoading { ProgressView().tint(.white) }
+                        else { Text(isLogin ? "Log ind" : "Opret konto").font(.headline) }
                     }
                     .foregroundColor(.white)
                     .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
@@ -425,12 +517,9 @@ struct LoginView: View {
                 Button(action: {
                     onLogin(UserProfile(id: 0, name: "Gaest", email: "", phone: nil, type: "guest"))
                 }) {
-                    Text("Fortsaet uden login")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+                    Text("Fortsaet uden login").font(.subheadline).foregroundColor(.secondary)
                 }
                 .padding(.top, 4)
-
                 Spacer(minLength: 40)
             }
             .padding(.horizontal, sizeClass == .regular ? 60 : 24)
@@ -439,9 +528,7 @@ struct LoginView: View {
 
     func inputField(_ placeholder: String, text: Binding<String>, icon: String, keyboard: UIKeyboardType = .default, autocap: Bool = true) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: icon)
-                .foregroundColor(.secondary)
-                .frame(width: 20)
+            Image(systemName: icon).foregroundColor(.secondary).frame(width: 20)
             TextField(placeholder, text: text)
                 .keyboardType(keyboard)
                 .autocapitalization(autocap ? .words : .none)
@@ -453,224 +540,236 @@ struct LoginView: View {
     }
 
     func doLogin() {
-        isLoading = true
-        errorMessage = ""
+        isLoading = true; errorMessage = ""
         guard let url = URL(string: "\(baseURL)/api/login.php") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: String] = ["email": email, "password": password, "mode": "customer"]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["email": email, "password": password, "mode": "customer"])
 
         URLSession.shared.dataTask(with: request) { data, _, _ in
             DispatchQueue.main.async {
                 isLoading = false
                 guard let data = data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    errorMessage = "Netvaerksfejl. Proev igen."
-                    return
+                    errorMessage = "Netvaerksfejl. Proev igen."; return
                 }
-                if let error = json["error"] as? String {
-                    errorMessage = error
-                    return
-                }
-                if let userDict = json["user"] as? [String: Any] {
-                    let user = UserProfile(
-                        id: userDict["id"] as? Int ?? 0,
-                        name: userDict["name"] as? String ?? "",
-                        email: userDict["email"] as? String ?? "",
-                        phone: userDict["phone"] as? String,
-                        type: userDict["type"] as? String ?? "customer"
-                    )
-                    onLogin(user)
+                if let error = json["error"] as? String { errorMessage = error; return }
+                if let u = json["user"] as? [String: Any] {
+                    onLogin(UserProfile(
+                        id: u["id"] as? Int ?? 0, name: u["name"] as? String ?? "",
+                        email: u["email"] as? String ?? "", phone: u["phone"] as? String,
+                        type: u["type"] as? String ?? "customer"))
                 }
             }
         }.resume()
     }
 
     func doRegister() {
-        isLoading = true
-        errorMessage = ""
-        guard !firstname.isEmpty else {
-            errorMessage = "Fornavn er paakraevet"
-            isLoading = false
-            return
-        }
+        isLoading = true; errorMessage = ""
+        guard !firstname.isEmpty else { errorMessage = "Fornavn er paakraevet"; isLoading = false; return }
         guard let url = URL(string: "\(baseURL)/api/register.php") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: String] = [
-            "firstname": firstname,
-            "lastname": lastname,
-            "email": email,
-            "phone": phone,
-            "password": password
-        ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "firstname": firstname, "lastname": lastname, "email": email, "phone": phone, "password": password])
 
         URLSession.shared.dataTask(with: request) { data, _, _ in
             DispatchQueue.main.async {
                 isLoading = false
                 guard let data = data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    errorMessage = "Netvaerksfejl. Proev igen."
-                    return
+                    errorMessage = "Netvaerksfejl. Proev igen."; return
                 }
-                if let error = json["error"] as? String {
-                    errorMessage = error
-                    return
-                }
-                if let userDict = json["user"] as? [String: Any] {
-                    let user = UserProfile(
-                        id: userDict["id"] as? Int ?? 0,
-                        name: userDict["name"] as? String ?? "",
-                        email: userDict["email"] as? String ?? "",
-                        phone: userDict["phone"] as? String,
-                        type: userDict["type"] as? String ?? "customer"
-                    )
-                    onLogin(user)
+                if let error = json["error"] as? String { errorMessage = error; return }
+                if let u = json["user"] as? [String: Any] {
+                    onLogin(UserProfile(
+                        id: u["id"] as? Int ?? 0, name: u["name"] as? String ?? "",
+                        email: u["email"] as? String ?? "", phone: u["phone"] as? String,
+                        type: u["type"] as? String ?? "customer"))
                 }
             }
         }.resume()
     }
 }
 
-// MARK: - Home View (Native)
-
-struct Restaurant: Identifiable, Codable {
-    let id: Int
-    let name: String
-    let alias: String
-    let type: Int
-    let type_label: String
-    let address: String
-    let lat: Double
-    let lng: Double
-    let image: String?
-    let categories: Int
-    let items: Int
-}
+// MARK: - Home View
 
 struct HomeView: View {
     @ObservedObject var locationManager: LocationManager
+    @ObservedObject var favorites: FavoritesManager = .shared
+    @ObservedObject var cart: CartManager = .shared
     @EnvironmentObject var appState: AppState
     @Environment(\.horizontalSizeClass) var sizeClass
     @State private var restaurants: [Restaurant] = []
     @State private var searchText = ""
     @State private var selectedFilter = "Alle"
     @State private var isLoading = true
+    @State private var showCart = false
 
     let filters = ["Alle", "Restauranter", "Butikker"]
 
     var filteredRestaurants: [Restaurant] {
         var list = restaurants
-        if selectedFilter == "Restauranter" {
-            list = list.filter { $0.type == 2 }
-        } else if selectedFilter == "Butikker" {
-            list = list.filter { $0.type != 2 }
-        }
+        if selectedFilter == "Restauranter" { list = list.filter { $0.type == 2 } }
+        else if selectedFilter == "Butikker" { list = list.filter { $0.type != 2 } }
         if !searchText.isEmpty {
             list = list.filter { $0.name.localizedCaseInsensitiveContains(searchText) || $0.address.localizedCaseInsensitiveContains(searchText) }
+        }
+        if let loc = locationManager.location {
+            list.sort { r1, r2 in
+                CLLocation(latitude: r1.lat, longitude: r1.lng).distance(from: loc) <
+                CLLocation(latitude: r2.lat, longitude: r2.lng).distance(from: loc)
+            }
         }
         return list
     }
 
+    var favoriteRestaurants: [Restaurant] {
+        restaurants.filter { favorites.isFavorite($0.id) }
+    }
+
     var gridColumns: [GridItem] {
-        if sizeClass == .regular {
-            return [GridItem(.adaptive(minimum: 300), spacing: 16)]
-        }
-        return [GridItem(.flexible())]
+        sizeClass == .regular ? [GridItem(.adaptive(minimum: 300), spacing: 16)] : [GridItem(.flexible())]
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Wromble")
-                        .font(.system(size: sizeClass == .regular ? 38 : 28, weight: .heavy))
-                        .foregroundColor(wrombleRed)
-                    Text("Hvad har du lyst til i dag?")
-                        .font(sizeClass == .regular ? .title3 : .subheadline)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.horizontal, sizeClass == .regular ? 24 : 16)
-                .padding(.top, 8)
-                .padding(.bottom, 16)
+        ZStack(alignment: .bottom) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    // Header
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Wromble")
+                            .font(.system(size: sizeClass == .regular ? 38 : 28, weight: .heavy))
+                            .foregroundColor(wrombleRed)
+                        if let loc = locationManager.location {
+                            HStack(spacing: 4) {
+                                Image(systemName: "location.fill").font(.caption).foregroundColor(wrombleRed)
+                                Text("Naerliggende steder").font(.subheadline).foregroundColor(.secondary)
+                            }
+                        } else {
+                            Text("Hvad har du lyst til i dag?").font(.subheadline).foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                    .padding(.top, 8).padding(.bottom, 16)
 
-                HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(.secondary)
-                    TextField("Soeg restauranter, butikker...", text: $searchText)
-                        .font(sizeClass == .regular ? .body : .subheadline)
-                }
-                .padding(sizeClass == .regular ? 14 : 12)
-                .background(Color(.secondarySystemBackground))
-                .cornerRadius(12)
-                .padding(.horizontal, sizeClass == .regular ? 24 : 16)
-                .padding(.bottom, 16)
-
-                ScrollView(.horizontal, showsIndicators: false) {
+                    // Search
                     HStack(spacing: 10) {
-                        ForEach(filters, id: \.self) { filter in
-                            Button(action: {
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                selectedFilter = filter
-                            }) {
-                                Text(filter)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundColor(selectedFilter == filter ? .white : .primary)
-                                    .padding(.horizontal, 18)
-                                    .padding(.vertical, 10)
-                                    .background(selectedFilter == filter ? wrombleRed : Color(.secondarySystemBackground))
-                                    .cornerRadius(20)
+                        Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                        TextField("Soeg restauranter, butikker...", text: $searchText)
+                            .font(sizeClass == .regular ? .body : .subheadline)
+                    }
+                    .padding(sizeClass == .regular ? 14 : 12)
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(12)
+                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                    .padding(.bottom, 16)
+
+                    // Filters
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(filters, id: \.self) { filter in
+                                Button(action: {
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                    selectedFilter = filter
+                                }) {
+                                    Text(filter)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundColor(selectedFilter == filter ? .white : .primary)
+                                        .padding(.horizontal, 18).padding(.vertical, 10)
+                                        .background(selectedFilter == filter ? wrombleRed : Color(.secondarySystemBackground))
+                                        .cornerRadius(20)
+                                }
                             }
                         }
+                        .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                     }
-                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
-                }
-                .padding(.bottom, 20)
+                    .padding(.bottom, 20)
 
-                if isLoading {
-                    VStack(spacing: 16) {
-                        ProgressView().scaleEffect(1.2)
-                        Text("Henter restauranter...")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 60)
-                } else if filteredRestaurants.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 40))
-                            .foregroundColor(.secondary)
-                        Text("Ingen resultater")
-                            .font(.headline)
-                        Text("Proev et andet soegeord")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 60)
-                } else {
-                    LazyVGrid(columns: gridColumns, spacing: sizeClass == .regular ? 16 : 12) {
-                        ForEach(filteredRestaurants) { restaurant in
-                            NavigationLink(destination: RestaurantDetailView(restaurant: restaurant)) {
-                                RestaurantCard(restaurant: restaurant)
+                    // Favorites section
+                    if !favoriteRestaurants.isEmpty && searchText.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Image(systemName: "heart.fill").foregroundColor(wrombleRed)
+                                Text("Dine favoritter").font(.title3.bold())
                             }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
-                }
+                            .padding(.horizontal, sizeClass == .regular ? 24 : 16)
 
-                Spacer(minLength: 40)
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 14) {
+                                    ForEach(favoriteRestaurants) { restaurant in
+                                        NavigationLink(destination: RestaurantDetailView(restaurant: restaurant)) {
+                                            FavoriteCard(restaurant: restaurant, userLocation: locationManager.location)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                            }
+                        }
+                        .padding(.bottom, 24)
+                    }
+
+                    // Restaurant list
+                    if isLoading {
+                        VStack(spacing: 16) {
+                            ProgressView().scaleEffect(1.2)
+                            Text("Henter restauranter...").font(.subheadline).foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity).padding(.top, 60)
+                    } else if filteredRestaurants.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: "magnifyingglass").font(.system(size: 40)).foregroundColor(.secondary)
+                            Text("Ingen resultater").font(.headline)
+                            Text("Proev et andet soegeord").font(.subheadline).foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity).padding(.top, 60)
+                    } else {
+                        LazyVGrid(columns: gridColumns, spacing: sizeClass == .regular ? 16 : 12) {
+                            ForEach(filteredRestaurants) { restaurant in
+                                NavigationLink(destination: RestaurantDetailView(restaurant: restaurant)) {
+                                    RestaurantCard(restaurant: restaurant, userLocation: locationManager.location)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                    }
+
+                    Spacer(minLength: cart.itemCount > 0 ? 80 : 40)
+                }
+            }
+            .navigationBarHidden(true)
+            .refreshable { await loadRestaurants() }
+            .task { await loadRestaurants() }
+            .onAppear {
+                if appState.locationEnabled { locationManager.requestLocation() }
+            }
+
+            // Floating cart bar
+            if cart.itemCount > 0 {
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    showCart = true
+                }) {
+                    HStack {
+                        Image(systemName: "cart.fill")
+                        Text("\(cart.itemCount) varer").font(.headline)
+                        Spacer()
+                        Text(String(format: "%.2f kr", cart.total)).font(.headline)
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 20).padding(.vertical, 14)
+                    .background(wrombleRed)
+                    .cornerRadius(14)
+                }
+                .padding(.horizontal, 16).padding(.bottom, 8)
+                .shadow(color: .black.opacity(0.2), radius: 8, y: -2)
             }
         }
-        .navigationBarHidden(true)
-        .refreshable { await loadRestaurants() }
-        .task { await loadRestaurants() }
+        .sheet(isPresented: $showCart) { CartView() }
     }
 
     func loadRestaurants() async {
@@ -679,12 +778,62 @@ struct HomeView: View {
             let (data, _) = try await URLSession.shared.data(from: url)
             struct Response: Codable { let restaurants: [Restaurant] }
             let response = try JSONDecoder().decode(Response.self, from: data)
-            await MainActor.run {
-                restaurants = response.restaurants
-                isLoading = false
-            }
+            await MainActor.run { restaurants = response.restaurants; isLoading = false }
         } catch {
             await MainActor.run { isLoading = false }
+        }
+    }
+}
+
+// MARK: - Favorite Card (horizontal scroll)
+
+struct FavoriteCard: View {
+    let restaurant: Restaurant
+    let userLocation: CLLocation?
+    @Environment(\.horizontalSizeClass) var sizeClass
+
+    var distance: String? {
+        guard let loc = userLocation, restaurant.lat != 0 || restaurant.lng != 0 else { return nil }
+        let d = CLLocation(latitude: restaurant.lat, longitude: restaurant.lng).distance(from: loc)
+        return d < 1000 ? String(format: "%.0f m", d) : String(format: "%.1f km", d / 1000)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack(alignment: .topTrailing) {
+                if let img = restaurant.image, !img.isEmpty {
+                    AsyncImage(url: URL(string: "\(baseURL)/uploads/\(img)")) { phase in
+                        switch phase {
+                        case .success(let image): image.resizable().scaledToFill()
+                        default: placeholder
+                        }
+                    }
+                    .frame(width: 160, height: 100).clipped()
+                } else {
+                    placeholder.frame(width: 160, height: 100)
+                }
+
+                if let dist = distance {
+                    Text(dist)
+                        .font(.caption2.bold()).foregroundColor(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(.black.opacity(0.6)).cornerRadius(6)
+                        .padding(6)
+                }
+            }
+            .cornerRadius(10)
+
+            Text(restaurant.name)
+                .font(.caption.bold()).lineLimit(1)
+                .frame(width: 160, alignment: .leading)
+        }
+    }
+
+    var placeholder: some View {
+        ZStack {
+            Color(.tertiarySystemBackground)
+            Image(systemName: restaurant.type == 2 ? "fork.knife" : "bag.fill")
+                .font(.title2).foregroundColor(.secondary.opacity(0.4))
         }
     }
 }
@@ -693,7 +842,15 @@ struct HomeView: View {
 
 struct RestaurantCard: View {
     let restaurant: Restaurant
+    let userLocation: CLLocation?
+    @ObservedObject var favorites: FavoritesManager = .shared
     @Environment(\.horizontalSizeClass) var sizeClass
+
+    var distance: String? {
+        guard let loc = userLocation, restaurant.lat != 0 || restaurant.lng != 0 else { return nil }
+        let d = CLLocation(latitude: restaurant.lat, longitude: restaurant.lng).distance(from: loc)
+        return d < 1000 ? String(format: "%.0f m", d) : String(format: "%.1f km", d / 1000)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -701,52 +858,60 @@ struct RestaurantCard: View {
                 if let img = restaurant.image, !img.isEmpty {
                     AsyncImage(url: URL(string: "\(baseURL)/uploads/\(img)")) { phase in
                         switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        default:
-                            restaurantPlaceholder
+                        case .success(let image): image.resizable().scaledToFill()
+                        default: restaurantPlaceholder
                         }
                     }
-                    .frame(height: sizeClass == .regular ? 180 : 140)
-                    .clipped()
+                    .frame(height: sizeClass == .regular ? 180 : 140).clipped()
                 } else {
-                    restaurantPlaceholder
-                        .frame(height: sizeClass == .regular ? 180 : 140)
+                    restaurantPlaceholder.frame(height: sizeClass == .regular ? 180 : 140)
                 }
 
-                Text(restaurant.type_label)
-                    .font(.caption.weight(.bold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(wrombleRed)
-                    .cornerRadius(8)
-                    .padding(10)
+                HStack(spacing: 8) {
+                    if let dist = distance {
+                        HStack(spacing: 4) {
+                            Image(systemName: "location.fill").font(.caption2)
+                            Text(dist).font(.caption2.bold())
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(.black.opacity(0.6)).cornerRadius(8)
+                    }
+
+                    Text(restaurant.type_label)
+                        .font(.caption.weight(.bold)).foregroundColor(.white)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(wrombleRed).cornerRadius(8)
+                }
+                .padding(10)
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(restaurant.name)
-                    .font(sizeClass == .regular ? .title3.weight(.bold) : .headline)
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
+                HStack {
+                    Text(restaurant.name)
+                        .font(sizeClass == .regular ? .title3.weight(.bold) : .headline)
+                        .foregroundColor(.primary).lineLimit(1)
+                    Spacer()
+                    Button(action: {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        favorites.toggle(restaurant.id)
+                    }) {
+                        Image(systemName: favorites.isFavorite(restaurant.id) ? "heart.fill" : "heart")
+                            .foregroundColor(wrombleRed).font(.title3)
+                    }
+                    .buttonStyle(.borderless)
+                }
 
                 HStack(spacing: 4) {
-                    Image(systemName: "mappin.circle.fill")
-                        .foregroundColor(wrombleRed)
-                        .font(.caption)
-                    Text(restaurant.address)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
+                    Image(systemName: "mappin.circle.fill").foregroundColor(wrombleRed).font(.caption)
+                    Text(restaurant.address).font(.caption).foregroundColor(.secondary).lineLimit(1)
                 }
 
                 HStack(spacing: 12) {
                     Label("\(restaurant.categories) kategorier", systemImage: "list.bullet")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .font(.caption2).foregroundColor(.secondary)
                     Label("\(restaurant.items) varer", systemImage: "cart")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .font(.caption2).foregroundColor(.secondary)
                 }
             }
             .padding(sizeClass == .regular ? 14 : 12)
@@ -760,110 +925,230 @@ struct RestaurantCard: View {
         ZStack {
             Color(.tertiarySystemBackground)
             Image(systemName: restaurant.type == 2 ? "fork.knife" : "bag.fill")
-                .font(.system(size: 36))
-                .foregroundColor(.secondary.opacity(0.4))
+                .font(.system(size: 36)).foregroundColor(.secondary.opacity(0.4))
         }
     }
 }
 
-// MARK: - Restaurant Detail (Native)
+// MARK: - Map Tab (MapKit)
 
-struct MenuCategory: Identifiable, Codable {
-    let id: Int
-    let name: String
-    let products: [MenuItem]
+struct MapTabView: View {
+    @ObservedObject var locationManager: LocationManager
+    @EnvironmentObject var appState: AppState
+    @Environment(\.horizontalSizeClass) var sizeClass
+    @State private var restaurants: [Restaurant] = []
+    @State private var isLoading = true
+    @State private var region = MKCoordinateRegion(
+        center: CLLocationCoordinate2D(latitude: 55.676, longitude: 12.568),
+        span: MKCoordinateSpan(latitudeDelta: 0.15, longitudeDelta: 0.15)
+    )
+    @State private var selectedRestaurant: Restaurant?
+
+    var mappableRestaurants: [Restaurant] {
+        restaurants.filter { $0.lat != 0 || $0.lng != 0 }
+    }
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            Map(coordinateRegion: $region, showsUserLocation: true, annotationItems: mappableRestaurants) { restaurant in
+                MapAnnotation(coordinate: CLLocationCoordinate2D(latitude: restaurant.lat, longitude: restaurant.lng)) {
+                    Button(action: {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        selectedRestaurant = restaurant
+                    }) {
+                        VStack(spacing: 2) {
+                            ZStack {
+                                Circle()
+                                    .fill(wrombleRed)
+                                    .frame(width: 36, height: 36)
+                                Image(systemName: restaurant.type == 2 ? "fork.knife" : "bag.fill")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                            .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
+                            Text(restaurant.name)
+                                .font(.caption2.bold())
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                                .padding(.horizontal, 4).padding(.vertical, 2)
+                                .background(.ultraThinMaterial)
+                                .cornerRadius(4)
+                        }
+                    }
+                }
+            }
+            .edgesIgnoringSafeArea(.bottom)
+
+            if isLoading {
+                ProgressView()
+                    .padding(16)
+                    .background(.ultraThinMaterial)
+                    .cornerRadius(12)
+                    .padding(.top, 60)
+            }
+        }
+        .navigationTitle("Kort")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: centerOnUser) {
+                    Image(systemName: "location.fill")
+                        .foregroundColor(wrombleRed)
+                }
+            }
+        }
+        .sheet(item: $selectedRestaurant) { restaurant in
+            NavigationStack {
+                RestaurantDetailView(restaurant: restaurant)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Luk") { selectedRestaurant = nil }
+                        }
+                    }
+            }
+        }
+        .task { await loadRestaurants() }
+        .onAppear {
+            if appState.locationEnabled { locationManager.requestLocation() }
+        }
+    }
+
+    func centerOnUser() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if let loc = locationManager.location {
+            withAnimation {
+                region.center = loc.coordinate
+                region.span = MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+            }
+        }
+    }
+
+    func loadRestaurants() async {
+        guard let url = URL(string: "\(baseURL)/api/restaurants.php") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            struct Response: Codable { let restaurants: [Restaurant] }
+            let response = try JSONDecoder().decode(Response.self, from: data)
+            await MainActor.run {
+                restaurants = response.restaurants
+                isLoading = false
+                if let first = mappableRestaurants.first, locationManager.location == nil {
+                    region.center = CLLocationCoordinate2D(latitude: first.lat, longitude: first.lng)
+                } else if let loc = locationManager.location {
+                    region.center = loc.coordinate
+                }
+            }
+        } catch {
+            await MainActor.run { isLoading = false }
+        }
+    }
 }
 
-struct MenuItem: Identifiable, Codable {
-    let id: Int
-    let name: String
-    let description: String?
-    let price: Double
-    let image: String?
-    let extra_images: [String]?
-}
+// MARK: - Restaurant Detail
 
 struct RestaurantDetailView: View {
     let restaurant: Restaurant
+    @ObservedObject var cart: CartManager = .shared
+    @ObservedObject var favorites: FavoritesManager = .shared
     @Environment(\.horizontalSizeClass) var sizeClass
     @State private var categories: [MenuCategory] = []
     @State private var isLoading = true
-    @State private var showWebOrder = false
+    @State private var showCart = false
+    @State private var showClearCartAlert = false
+    @State private var pendingItem: MenuItem?
 
     var body: some View {
-        Group {
-            if showWebOrder {
-                WebOrderView(restaurant: restaurant)
-            } else {
-                menuContent
+        ZStack(alignment: .bottom) {
+            menuContent
+
+            if cart.itemCount > 0 && cart.restaurantId == restaurant.id {
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    showCart = true
+                }) {
+                    HStack {
+                        Image(systemName: "cart.fill")
+                        Text("Se kurv (\(cart.itemCount))").font(.headline)
+                        Spacer()
+                        Text(String(format: "%.2f kr", cart.total)).font(.headline)
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 20).padding(.vertical, 14)
+                    .background(wrombleRed).cornerRadius(14)
+                }
+                .padding(.horizontal, 16).padding(.bottom, 8)
+                .shadow(color: .black.opacity(0.2), radius: 8, y: -2)
             }
         }
         .navigationTitle(restaurant.name)
         .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                HStack(spacing: 14) {
+                    Button(action: {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        favorites.toggle(restaurant.id)
+                    }) {
+                        Image(systemName: favorites.isFavorite(restaurant.id) ? "heart.fill" : "heart")
+                            .foregroundColor(wrombleRed)
+                    }
+                    if restaurant.lat != 0 || restaurant.lng != 0 {
+                        Button(action: openInMaps) {
+                            Image(systemName: "map").foregroundColor(wrombleRed)
+                        }
+                    }
+                    ShareLink(item: "\(restaurant.name) paa Wromble: \(baseURL)/\(restaurant.alias)/") {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showCart) { CartView() }
+        .alert("Ryd kurv?", isPresented: $showClearCartAlert) {
+            Button("Ja, ryd kurven", role: .destructive) {
+                if let item = pendingItem {
+                    cart.addItem(item, forRestaurant: restaurant.id, name: restaurant.name)
+                    pendingItem = nil
+                }
+            }
+            Button("Annuller", role: .cancel) { pendingItem = nil }
+        } message: {
+            Text("Du har varer fra \(cart.restaurantName) i kurven. Vil du rydde den og tilfoeje fra \(restaurant.name)?")
+        }
         .task { await loadMenu() }
     }
 
     var menuContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                // Restaurant header
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(restaurant.type_label)
-                                .font(.caption.weight(.bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(wrombleRed)
-                                .cornerRadius(6)
+                                .font(.caption.weight(.bold)).foregroundColor(.white)
+                                .padding(.horizontal, 10).padding(.vertical, 4)
+                                .background(wrombleRed).cornerRadius(6)
                             Text(restaurant.name)
                                 .font(sizeClass == .regular ? .title.bold() : .title2.bold())
                         }
                         Spacer()
                     }
                     HStack(spacing: 4) {
-                        Image(systemName: "mappin.circle.fill")
-                            .foregroundColor(wrombleRed)
-                        Text(restaurant.address)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                        Image(systemName: "mappin.circle.fill").foregroundColor(wrombleRed)
+                        Text(restaurant.address).font(.subheadline).foregroundColor(.secondary)
                     }
                 }
                 .padding(sizeClass == .regular ? 24 : 16)
 
-                Button(action: {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    showWebOrder = true
-                }) {
-                    HStack {
-                        Image(systemName: "cart.fill")
-                        Text("Bestil nu")
-                            .font(.headline)
-                    }
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(wrombleRed)
-                    .cornerRadius(12)
-                }
-                .padding(.horizontal, sizeClass == .regular ? 24 : 16)
-                .padding(.bottom, 20)
-
                 if isLoading {
-                    ProgressView()
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 40)
+                    ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
                 } else if categories.isEmpty {
                     VStack(spacing: 12) {
-                        Image(systemName: "menucard")
-                            .font(.system(size: 40))
-                            .foregroundColor(.secondary)
-                        Text("Ingen menukort endnu")
-                            .font(.headline)
-                            .foregroundColor(.secondary)
+                        Image(systemName: "menucard").font(.system(size: 40)).foregroundColor(.secondary)
+                        Text("Ingen menukort endnu").font(.headline).foregroundColor(.secondary)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 40)
+                    .frame(maxWidth: .infinity).padding(.top, 40)
                 } else {
                     ForEach(categories) { category in
                         VStack(alignment: .leading, spacing: 12) {
@@ -873,11 +1158,10 @@ struct RestaurantDetailView: View {
                                 .padding(.top, 12)
 
                             ForEach(category.products) { item in
-                                MenuItemRow(item: item)
+                                MenuItemRow(item: item, onAdd: { addToCart(item) })
                                     .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                             }
                         }
-
                         if category.id != categories.last?.id {
                             Divider()
                                 .padding(.horizontal, sizeClass == .regular ? 24 : 16)
@@ -886,25 +1170,37 @@ struct RestaurantDetailView: View {
                     }
                 }
 
-                Spacer(minLength: 40)
+                Spacer(minLength: cart.itemCount > 0 ? 80 : 40)
             }
         }
+    }
+
+    func addToCart(_ item: MenuItem) {
+        if cart.restaurantId != 0 && cart.restaurantId != restaurant.id && !cart.items.isEmpty {
+            pendingItem = item
+            showClearCartAlert = true
+        } else {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            cart.addItem(item, forRestaurant: restaurant.id, name: restaurant.name)
+        }
+    }
+
+    func openInMaps() {
+        let coordinate = CLLocationCoordinate2D(latitude: restaurant.lat, longitude: restaurant.lng)
+        let placemark = MKPlacemark(coordinate: coordinate)
+        let mapItem = MKMapItem(placemark: placemark)
+        mapItem.name = restaurant.name
+        mapItem.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
     }
 
     func loadMenu() async {
         guard let url = URL(string: "\(baseURL)/api/menu.php?company_id=\(restaurant.id)") else { return }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            struct Response: Codable {
-                let company: CompanyInfo?
-                let categories: [MenuCategory]
-                struct CompanyInfo: Codable { let id: Int; let name: String }
-            }
+            struct CompanyInfo: Codable { let id: Int; let name: String }
+            struct Response: Codable { let company: CompanyInfo?; let categories: [MenuCategory] }
             let response = try JSONDecoder().decode(Response.self, from: data)
-            await MainActor.run {
-                categories = response.categories
-                isLoading = false
-            }
+            await MainActor.run { categories = response.categories; isLoading = false }
         } catch {
             await MainActor.run { isLoading = false }
         }
@@ -915,23 +1211,25 @@ struct RestaurantDetailView: View {
 
 struct MenuItemRow: View {
     let item: MenuItem
+    var onAdd: () -> Void
+    @ObservedObject var cart: CartManager = .shared
     @Environment(\.horizontalSizeClass) var sizeClass
 
+    var quantityInCart: Int {
+        cart.items.first(where: { $0.id == item.id })?.quantity ?? 0
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.name)
                     .font(sizeClass == .regular ? .body.weight(.semibold) : .subheadline.weight(.semibold))
                     .foregroundColor(.primary)
                 if let desc = item.description, !desc.isEmpty {
-                    Text(desc)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(2)
+                    Text(desc).font(.caption).foregroundColor(.secondary).lineLimit(2)
                 }
                 Text(String(format: "%.2f kr", item.price))
-                    .font(.subheadline.weight(.bold))
-                    .foregroundColor(wrombleRed)
+                    .font(.subheadline.weight(.bold)).foregroundColor(wrombleRed)
             }
 
             Spacer()
@@ -939,16 +1237,32 @@ struct MenuItemRow: View {
             if let img = item.image, !img.isEmpty {
                 AsyncImage(url: URL(string: "\(baseURL)/uploads/\(img)")) { phase in
                     switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    default:
-                        Color(.tertiarySystemBackground)
+                    case .success(let image): image.resizable().scaledToFill()
+                    default: Color(.tertiarySystemBackground)
                     }
                 }
                 .frame(width: sizeClass == .regular ? 80 : 64, height: sizeClass == .regular ? 80 : 64)
-                .cornerRadius(10)
-                .clipped()
+                .cornerRadius(10).clipped()
             }
+
+            Button(action: onAdd) {
+                if quantityInCart > 0 {
+                    HStack(spacing: 6) {
+                        Button(action: { cart.removeItem(item.id) }) {
+                            Image(systemName: "minus.circle.fill").font(.title3).foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+
+                        Text("\(quantityInCart)")
+                            .font(.subheadline.bold()).frame(minWidth: 20)
+
+                        Image(systemName: "plus.circle.fill").font(.title3).foregroundColor(wrombleRed)
+                    }
+                } else {
+                    Image(systemName: "plus.circle.fill").font(.title2).foregroundColor(wrombleRed)
+                }
+            }
+            .buttonStyle(.borderless)
         }
         .padding(12)
         .background(Color(.secondarySystemBackground))
@@ -956,171 +1270,242 @@ struct MenuItemRow: View {
     }
 }
 
-// MARK: - Web Order View (checkout only)
+// MARK: - Cart View
 
-struct WebOrderView: View {
-    let restaurant: Restaurant
-    @State private var orderURL: URL?
-
-    var body: some View {
-        WrombleWebView(url: $orderURL)
-            .navigationTitle("Bestil")
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                let alias = restaurant.alias.isEmpty ? "\(restaurant.id)" : restaurant.alias
-                orderURL = URL(string: "\(baseURL)/\(alias)/")
-            }
-    }
-}
-
-// MARK: - Explore View (Native)
-
-struct ExploreView: View {
-    @ObservedObject var locationManager: LocationManager
-    @EnvironmentObject var appState: AppState
+struct CartView: View {
+    @ObservedObject var cart: CartManager = .shared
+    @Environment(\.dismiss) var dismiss
     @Environment(\.horizontalSizeClass) var sizeClass
-
-    let categories: [(name: String, icon: String)] = [
-        ("Alle", "square.grid.2x2.fill"),
-        ("Restauranter", "fork.knife"),
-        ("Butikker", "bag.fill"),
-        ("Cafeer", "cup.and.saucer.fill"),
-        ("Bagerier", "birthday.cake.fill"),
-    ]
-
-    let quickActions: [(name: String, icon: String)] = [
-        ("Bordbestilling", "calendar.badge.clock"),
-        ("Wromble+", "star.fill"),
-        ("Bliv partner", "handshake.fill"),
-    ]
-
-    var gridColumns: [GridItem] {
-        if sizeClass == .regular {
-            return [GridItem(.adaptive(minimum: 240), spacing: 16)]
-        }
-        return [GridItem(.flexible()), GridItem(.flexible())]
-    }
+    @State private var orderNote = ""
+    @State private var isOrdering = false
+    @State private var showOrderConfirmation = false
+    @State private var orderId: Int = 0
+    @State private var showLoginSheet = false
+    @State private var loggedInUser: UserProfile?
+    @State private var errorMessage = ""
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: sizeClass == .regular ? 36 : 24) {
-                if let loc = locationManager.location {
-                    HStack(spacing: 8) {
-                        Image(systemName: "location.fill")
-                            .foregroundColor(wrombleRed)
-                        Text("Din placering fundet")
-                            .font(sizeClass == .regular ? .body : .subheadline)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text(String(format: "%.4f, %.4f", loc.coordinate.latitude, loc.coordinate.longitude))
-                            .font(sizeClass == .regular ? .subheadline : .caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
-                } else if locationManager.authorizationStatus == .denied {
-                    HStack(spacing: 8) {
-                        Image(systemName: "location.slash.fill")
-                            .foregroundColor(.orange)
-                        Text("Placering deaktiveret")
-                            .font(sizeClass == .regular ? .body : .subheadline)
-                        Spacer()
-                        Button("Aktiver") {
-                            if let url = URL(string: UIApplication.openSettingsURLString) {
-                                UIApplication.shared.open(url)
-                            }
-                        }
-                        .font(sizeClass == .regular ? .body.bold() : .subheadline.bold())
-                        .foregroundColor(wrombleRed)
-                    }
-                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
-                }
-
-                VStack(alignment: .leading, spacing: sizeClass == .regular ? 18 : 12) {
-                    Text("Kategorier")
-                        .font(sizeClass == .regular ? .title.bold() : .title2.bold())
-                        .padding(.horizontal, sizeClass == .regular ? 24 : 16)
-
-                    LazyVGrid(columns: gridColumns, spacing: sizeClass == .regular ? 16 : 12) {
-                        ForEach(categories, id: \.name) { cat in
-                            HStack(spacing: sizeClass == .regular ? 16 : 12) {
-                                Image(systemName: cat.icon)
-                                    .font(sizeClass == .regular ? .title2 : .title3)
-                                    .foregroundColor(.white)
-                                    .frame(width: sizeClass == .regular ? 56 : 44, height: sizeClass == .regular ? 56 : 44)
-                                    .background(wrombleRed)
-                                    .cornerRadius(sizeClass == .regular ? 14 : 12)
-                                Text(cat.name)
-                                    .font(sizeClass == .regular ? .body.bold() : .subheadline.bold())
-                                    .foregroundColor(.primary)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .foregroundColor(.secondary)
-                                    .font(sizeClass == .regular ? .subheadline : .caption)
-                            }
-                            .padding(sizeClass == .regular ? 16 : 12)
-                            .background(Color(.secondarySystemBackground))
-                            .cornerRadius(14)
-                        }
-                    }
-                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
-                }
-
-                VStack(alignment: .leading, spacing: sizeClass == .regular ? 18 : 12) {
-                    Text("Hurtig adgang")
-                        .font(sizeClass == .regular ? .title.bold() : .title2.bold())
-                        .padding(.horizontal, sizeClass == .regular ? 24 : 16)
-
-                    ForEach(quickActions, id: \.name) { action in
-                        HStack(spacing: sizeClass == .regular ? 18 : 14) {
-                            Image(systemName: action.icon)
-                                .font(sizeClass == .regular ? .title2 : .title3)
-                                .foregroundColor(wrombleRed)
-                                .frame(width: sizeClass == .regular ? 40 : 32)
-                            Text(action.name)
-                                .font(sizeClass == .regular ? .title3 : .body)
-                                .foregroundColor(.primary)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .foregroundColor(.secondary)
-                                .font(sizeClass == .regular ? .subheadline : .caption)
-                        }
-                        .padding(.horizontal, sizeClass == .regular ? 20 : 16)
-                        .padding(.vertical, sizeClass == .regular ? 18 : 14)
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(12)
-                        .padding(.horizontal, sizeClass == .regular ? 24 : 16)
-                    }
-                }
-
-                Spacer(minLength: 40)
-            }
-            .padding(.top, 8)
-        }
-        .navigationTitle("Udforsk")
-        .onAppear {
-            if appState.locationEnabled {
-                locationManager.requestLocation()
+        NavigationStack {
+            if showOrderConfirmation {
+                orderConfirmation
+            } else if cart.items.isEmpty {
+                emptyCart
+            } else {
+                cartContent
             }
         }
     }
+
+    var emptyCart: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "cart").font(.system(size: 60)).foregroundColor(.secondary)
+            Text("Din kurv er tom").font(.title2.bold())
+            Text("Tilfoej varer fra en restaurant").foregroundColor(.secondary)
+            Button("Luk") { dismiss() }.font(.headline).foregroundColor(wrombleRed)
+            Spacer()
+        }
+        .navigationTitle("Kurv")
+    }
+
+    var cartContent: some View {
+        List {
+            Section(header: Text(cart.restaurantName)) {
+                ForEach(cart.items) { item in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.name).font(.headline)
+                            Text(String(format: "%.2f kr", item.price)).font(.subheadline).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        HStack(spacing: 14) {
+                            Button(action: {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                cart.removeItem(item.id)
+                            }) {
+                                Image(systemName: "minus.circle.fill").font(.title3).foregroundColor(.red)
+                            }
+                            .buttonStyle(.borderless)
+
+                            Text("\(item.quantity)").font(.headline).frame(minWidth: 24)
+
+                            Button(action: {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                if let idx = cart.items.firstIndex(where: { $0.id == item.id }) {
+                                    cart.items[idx].quantity += 1
+                                }
+                            }) {
+                                Image(systemName: "plus.circle.fill").font(.title3).foregroundColor(wrombleRed)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+            }
+
+            Section(header: Text("Note til restaurant")) {
+                TextField("Allergier, leveringsinstruktioner...", text: $orderNote)
+            }
+
+            Section {
+                HStack {
+                    Text("Total").font(.title3.bold())
+                    Spacer()
+                    Text(String(format: "%.2f kr", cart.total)).font(.title3.bold()).foregroundColor(wrombleRed)
+                }
+            }
+
+            if !errorMessage.isEmpty {
+                Section {
+                    Text(errorMessage).foregroundColor(.red).font(.subheadline)
+                }
+            }
+
+            Section {
+                Button(action: placeOrder) {
+                    HStack {
+                        Spacer()
+                        if isOrdering {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text("Bestil nu").font(.headline)
+                        }
+                        Spacer()
+                    }
+                    .foregroundColor(.white)
+                    .padding(.vertical, 6)
+                }
+                .listRowBackground(wrombleRed)
+                .disabled(isOrdering)
+            }
+        }
+        .navigationTitle("Din kurv")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("Luk") { dismiss() } }
+            ToolbarItem(placement: .destructiveAction) {
+                Button("Ryd") {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    cart.clear()
+                }.foregroundColor(.red)
+            }
+        }
+        .sheet(isPresented: $showLoginSheet) {
+            NavigationStack {
+                LoginView(onLogin: { user in
+                    loggedInUser = user
+                    if user.id > 0 {
+                        UserDefaults.standard.set(user.id, forKey: "loggedInUserId")
+                        UserDefaults.standard.set(user.name, forKey: "loggedInUserName")
+                        UserDefaults.standard.set(user.email, forKey: "loggedInUserEmail")
+                        showLoginSheet = false
+                        submitOrder(userId: user.id)
+                    }
+                })
+                .navigationTitle("Log ind for at bestille")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Luk") { showLoginSheet = false } }
+                }
+            }
+        }
+        .onAppear { loadUser() }
+    }
+
+    var orderConfirmation: some View {
+        VStack(spacing: 24) {
+            Spacer()
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 80)).foregroundColor(.green)
+            Text("Ordre bekraeftet!").font(.title.bold())
+            Text("Ordrenummer: #\(orderId)")
+                .font(.title3).foregroundColor(.secondary)
+            Text("Din ordre er modtaget og vil blive behandlet hurtigst muligt")
+                .font(.body).foregroundColor(.secondary)
+                .multilineTextAlignment(.center).padding(.horizontal, 40)
+            Button(action: {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                cart.clear()
+                dismiss()
+            }) {
+                Text("Faerdig")
+                    .font(.headline).foregroundColor(.white)
+                    .frame(maxWidth: sizeClass == .regular ? 300 : .infinity)
+                    .padding(.vertical, 16)
+                    .background(wrombleRed).cornerRadius(14)
+            }
+            .padding(.horizontal, 30)
+            Spacer()
+        }
+        .navigationTitle("Bekraeftelse")
+    }
+
+    func loadUser() {
+        if let savedId = UserDefaults.standard.value(forKey: "loggedInUserId") as? Int, savedId > 0 {
+            let savedName = UserDefaults.standard.string(forKey: "loggedInUserName") ?? ""
+            let savedEmail = UserDefaults.standard.string(forKey: "loggedInUserEmail") ?? ""
+            loggedInUser = UserProfile(id: savedId, name: savedName, email: savedEmail, phone: nil, type: "customer")
+        }
+    }
+
+    func placeOrder() {
+        guard let user = loggedInUser, user.id > 0 else {
+            showLoginSheet = true
+            return
+        }
+        submitOrder(userId: user.id)
+    }
+
+    func submitOrder(userId: Int) {
+        isOrdering = true
+        errorMessage = ""
+        guard let url = URL(string: "\(baseURL)/api/place-order.php") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "user_id": userId,
+            "company_id": cart.restaurantId,
+            "total": cart.total,
+            "note": orderNote,
+            "items": cart.items.map { ["id": $0.id, "quantity": $0.quantity] as [String: Any] }
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            DispatchQueue.main.async {
+                isOrdering = false
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    errorMessage = "Netvaerksfejl. Proev igen."
+                    return
+                }
+                if let error = json["error"] as? String {
+                    errorMessage = error
+                    return
+                }
+                if let oid = json["order_id"] as? Int {
+                    orderId = oid
+                    showOrderConfirmation = true
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    scheduleOrderNotification(orderId: oid)
+                }
+            }
+        }.resume()
+    }
+
+    func scheduleOrderNotification(orderId: Int) {
+        let content = UNMutableNotificationContent()
+        content.title = "Ordrestatus"
+        content.body = "Din ordre #\(orderId) fra \(cart.restaurantName) er under behandling"
+        content.sound = .default
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1800, repeats: false)
+        let request = UNNotificationRequest(identifier: "order-\(orderId)", content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request)
+    }
 }
 
-// MARK: - Orders View (Native)
-
-struct Order: Identifiable {
-    let id: Int
-    let companyName: String
-    let date: String
-    let total: Double
-    let status: String
-    let items: [OrderItem]
-}
-
-struct OrderItem {
-    let name: String
-    let quantity: Int
-    let price: Double
-}
+// MARK: - Orders View
 
 struct OrdersView: View {
     @EnvironmentObject var appState: AppState
@@ -1137,10 +1522,7 @@ struct OrdersView: View {
             } else if showLogin {
                 LoginView(onLogin: { user in
                     loggedInUser = user
-                    if user.id > 0 {
-                        showLogin = false
-                        loadOrders(userId: user.id)
-                    }
+                    if user.id > 0 { showLogin = false; loadOrders(userId: user.id) }
                 })
             } else {
                 loginPrompt
@@ -1149,9 +1531,9 @@ struct OrdersView: View {
         .navigationTitle("Ordrer")
         .onAppear {
             if let savedId = UserDefaults.standard.value(forKey: "loggedInUserId") as? Int, savedId > 0 {
-                let savedName = UserDefaults.standard.string(forKey: "loggedInUserName") ?? ""
-                let savedEmail = UserDefaults.standard.string(forKey: "loggedInUserEmail") ?? ""
-                loggedInUser = UserProfile(id: savedId, name: savedName, email: savedEmail, phone: nil, type: "customer")
+                let n = UserDefaults.standard.string(forKey: "loggedInUserName") ?? ""
+                let e = UserDefaults.standard.string(forKey: "loggedInUserEmail") ?? ""
+                loggedInUser = UserProfile(id: savedId, name: n, email: e, phone: nil, type: "customer")
                 loadOrders(userId: savedId)
             }
         }
@@ -1161,24 +1543,17 @@ struct OrdersView: View {
         VStack(spacing: 20) {
             Spacer()
             Image(systemName: "bag.circle.fill")
-                .font(.system(size: sizeClass == .regular ? 70 : 50))
-                .foregroundColor(wrombleRed)
-            Text("Se dine ordrer")
-                .font(sizeClass == .regular ? .title.bold() : .title2.bold())
-            Text("Log ind for at se din ordrehistorik")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+                .font(.system(size: sizeClass == .regular ? 70 : 50)).foregroundColor(wrombleRed)
+            Text("Se dine ordrer").font(sizeClass == .regular ? .title.bold() : .title2.bold())
+            Text("Log ind for at se din ordrehistorik").font(.subheadline).foregroundColor(.secondary)
             Button(action: {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 showLogin = true
             }) {
                 Text("Log ind")
-                    .font(.headline)
-                    .foregroundColor(.white)
+                    .font(.headline).foregroundColor(.white)
                     .frame(maxWidth: sizeClass == .regular ? 300 : .infinity)
-                    .padding(.vertical, 14)
-                    .background(wrombleRed)
-                    .cornerRadius(12)
+                    .padding(.vertical, 14).background(wrombleRed).cornerRadius(12)
             }
             .padding(.horizontal, 40)
             Spacer()
@@ -1191,62 +1566,45 @@ struct OrdersView: View {
                 VStack {
                     Spacer()
                     ProgressView()
-                    Text("Henter ordrer...")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .padding(.top, 8)
+                    Text("Henter ordrer...").font(.subheadline).foregroundColor(.secondary).padding(.top, 8)
                     Spacer()
                 }
             } else if orders.isEmpty {
                 VStack(spacing: 16) {
                     Spacer()
-                    Image(systemName: "bag")
-                        .font(.system(size: 50))
-                        .foregroundColor(.secondary)
-                    Text("Ingen ordrer endnu")
-                        .font(.title3.bold())
-                    Text("Dine ordrer vises her naar du bestiller")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+                    Image(systemName: "bag").font(.system(size: 50)).foregroundColor(.secondary)
+                    Text("Ingen ordrer endnu").font(.title3.bold())
+                    Text("Dine ordrer vises her naar du bestiller").font(.subheadline).foregroundColor(.secondary)
                     Spacer()
                 }
             } else {
                 List(orders) { order in
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text(order.companyName)
-                                .font(.headline)
+                            Text(order.companyName).font(.headline)
                             Spacer()
                             orderStatusBadge(order.status)
                         }
-
                         if !order.date.isEmpty {
-                            Text(order.date)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                            Text(order.date).font(.caption).foregroundColor(.secondary)
                         }
-
                         ForEach(order.items, id: \.name) { item in
                             HStack {
-                                Text("\(item.quantity)x \(item.name)")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
+                                Text("\(item.quantity)x \(item.name)").font(.subheadline).foregroundColor(.secondary)
                                 Spacer()
                                 Text(String(format: "%.2f kr", item.price * Double(item.quantity)))
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
+                                    .font(.subheadline).foregroundColor(.secondary)
                             }
                         }
-
                         HStack {
                             Spacer()
                             Text(String(format: "Total: %.2f kr", order.total))
-                                .font(.subheadline.weight(.bold))
-                                .foregroundColor(wrombleRed)
+                                .font(.subheadline.weight(.bold)).foregroundColor(wrombleRed)
                         }
                     }
                     .padding(.vertical, 4)
                 }
+                .refreshable { loadOrders(userId: user.id) }
             }
         }
     }
@@ -1260,14 +1618,10 @@ struct OrdersView: View {
             default: return ("Afventer", .blue)
             }
         }()
-
         return Text(label)
-            .font(.caption.weight(.bold))
-            .foregroundColor(.white)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(color)
-            .cornerRadius(6)
+            .font(.caption.weight(.bold)).foregroundColor(.white)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(color).cornerRadius(6)
     }
 
     func loadOrders(userId: Int) {
@@ -1280,42 +1634,26 @@ struct OrdersView: View {
                 isLoading = false
                 guard let data = data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let ordersArray = json["orders"] as? [[String: Any]] else { return }
-
-                orders = ordersArray.map { o in
+                      let arr = json["orders"] as? [[String: Any]] else { return }
+                orders = arr.map { o in
                     let items = (o["items"] as? [[String: Any]] ?? []).map { i in
-                        OrderItem(
-                            name: i["name"] as? String ?? "Ukendt",
-                            quantity: i["quantity"] as? Int ?? 1,
-                            price: i["price"] as? Double ?? 0
-                        )
+                        OrderItem(name: i["name"] as? String ?? "Ukendt",
+                                  quantity: i["quantity"] as? Int ?? 1,
+                                  price: i["price"] as? Double ?? 0)
                     }
-                    return Order(
-                        id: o["id"] as? Int ?? 0,
-                        companyName: o["company_name"] as? String ?? "Ukendt",
-                        date: o["date"] as? String ?? "",
-                        total: o["total"] as? Double ?? 0,
-                        status: o["status"] as? String ?? "pending",
-                        items: items
-                    )
+                    return Order(id: o["id"] as? Int ?? 0,
+                                 companyName: o["company_name"] as? String ?? "Ukendt",
+                                 date: o["date"] as? String ?? "",
+                                 total: o["total"] as? Double ?? 0,
+                                 status: o["status"] as? String ?? "pending",
+                                 items: items)
                 }
             }
         }.resume()
     }
 }
 
-// MARK: - Chat View (Native)
-
-struct ChatMessage: Identifiable {
-    let id: Int
-    let senderType: String
-    let senderName: String
-    let message: String
-    let fileURL: String?
-    let fileType: String?
-    let fileName: String?
-    let createdAt: String
-}
+// MARK: - Chat View
 
 class ChatViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
@@ -1323,7 +1661,6 @@ class ChatViewModel: ObservableObject {
     @Published var status: String = "open"
     @Published var isStarted = false
     @Published var isLoading = false
-
     private var pollTimer: Timer?
     private var lastMessageId = 0
 
@@ -1333,8 +1670,7 @@ class ChatViewModel: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: String] = ["name": name, "email": email]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["name": name, "email": email])
 
         URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
             guard let data = data,
@@ -1359,10 +1695,8 @@ class ChatViewModel: ObservableObject {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
-            "conversation_id": conversationId,
-            "sender_type": "customer",
-            "sender_name": senderName,
-            "message": text
+            "conversation_id": conversationId, "sender_type": "customer",
+            "sender_name": senderName, "message": text
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
@@ -1371,15 +1705,10 @@ class ChatViewModel: ObservableObject {
     func startPolling() {
         pollTimer?.invalidate()
         poll()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            self?.poll()
-        }
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in self?.poll() }
     }
 
-    func stopPolling() {
-        pollTimer?.invalidate()
-        pollTimer = nil
-    }
+    func stopPolling() { pollTimer?.invalidate(); pollTimer = nil }
 
     private func poll() {
         guard conversationId > 0 else { return }
@@ -1393,7 +1722,7 @@ class ChatViewModel: ObservableObject {
             let newStatus = json["status"] as? String ?? "open"
             var newMessages: [ChatMessage] = []
             for msg in msgsArray {
-                let cm = ChatMessage(
+                newMessages.append(ChatMessage(
                     id: msg["id"] as? Int ?? 0,
                     senderType: msg["sender_type"] as? String ?? "",
                     senderName: msg["sender_name"] as? String ?? "",
@@ -1401,11 +1730,8 @@ class ChatViewModel: ObservableObject {
                     fileURL: msg["file_url"] as? String,
                     fileType: msg["file_type"] as? String,
                     fileName: msg["file_name"] as? String,
-                    createdAt: msg["created_at"] as? String ?? ""
-                )
-                newMessages.append(cm)
+                    createdAt: msg["created_at"] as? String ?? ""))
             }
-
             DispatchQueue.main.async {
                 self?.status = newStatus
                 if !newMessages.isEmpty {
@@ -1426,15 +1752,11 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !viewModel.isStarted {
-                chatStartForm
-            } else {
+            if !viewModel.isStarted { chatStartForm }
+            else {
                 chatMessages
-                if viewModel.status == "open" {
-                    chatInputBar
-                } else {
-                    closedBanner
-                }
+                if viewModel.status == "open" { chatInputBar }
+                else { closedBanner }
             }
         }
         .navigationTitle("Kundeservice")
@@ -1445,29 +1767,16 @@ struct ChatView: View {
     var chatStartForm: some View {
         VStack(spacing: 20) {
             Spacer()
-
             Image(systemName: "message.badge.fill")
-                .font(.system(size: sizeClass == .regular ? 70 : 50))
-                .foregroundColor(wrombleRed)
-
-            Text("Kontakt Kundeservice")
-                .font(sizeClass == .regular ? .title.bold() : .title2.bold())
-
-            Text("Vi svarer hurtigst muligt")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+                .font(.system(size: sizeClass == .regular ? 70 : 50)).foregroundColor(wrombleRed)
+            Text("Kontakt Kundeservice").font(sizeClass == .regular ? .title.bold() : .title2.bold())
+            Text("Vi svarer hurtigst muligt").font(.subheadline).foregroundColor(.secondary)
 
             VStack(spacing: 12) {
-                TextField("Dit navn", text: $nameInput)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.body)
-
+                TextField("Dit navn", text: $nameInput).textFieldStyle(.roundedBorder).font(.body)
                 TextField("E-mail (valgfrit)", text: $emailInput)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.body)
-                    .keyboardType(.emailAddress)
-                    .textContentType(.emailAddress)
-                    .autocapitalization(.none)
+                    .textFieldStyle(.roundedBorder).font(.body)
+                    .keyboardType(.emailAddress).textContentType(.emailAddress).autocapitalization(.none)
             }
             .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
             .padding(.horizontal, sizeClass == .regular ? 60 : 30)
@@ -1476,21 +1785,15 @@ struct ChatView: View {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 viewModel.startConversation(name: nameInput, email: emailInput)
             }) {
-                if viewModel.isLoading {
-                    ProgressView().tint(.white)
-                } else {
-                    Text("Start chat")
-                        .font(.headline)
-                }
+                if viewModel.isLoading { ProgressView().tint(.white) }
+                else { Text("Start chat").font(.headline) }
             }
             .foregroundColor(.white)
             .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
             .padding(.vertical, 14)
-            .background(nameInput.isEmpty ? Color.gray : wrombleRed)
-            .cornerRadius(12)
+            .background(nameInput.isEmpty ? Color.gray : wrombleRed).cornerRadius(12)
             .padding(.horizontal, sizeClass == .regular ? 60 : 30)
             .disabled(nameInput.isEmpty || viewModel.isLoading)
-
             Spacer()
         }
     }
@@ -1500,8 +1803,7 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(spacing: 8) {
                     ForEach(viewModel.messages) { msg in
-                        chatBubble(msg)
-                            .id(msg.id)
+                        chatBubble(msg).id(msg.id)
                     }
                 }
                 .padding(sizeClass == .regular ? 20 : 14)
@@ -1520,27 +1822,20 @@ struct ChatView: View {
             if isCustomer { Spacer(minLength: 60) }
             VStack(alignment: isCustomer ? .trailing : .leading, spacing: 4) {
                 if !isCustomer {
-                    Text(msg.senderName)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundColor(.secondary)
+                    Text(msg.senderName).font(.caption2.weight(.semibold)).foregroundColor(.secondary)
                 }
-                Text(msg.message)
-                    .font(.body)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                Text(msg.message).font(.body)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(isCustomer ? wrombleRed : Color(.secondarySystemBackground))
                     .foregroundColor(isCustomer ? .white : .primary)
                     .cornerRadius(16)
-
                 if let fileURL = msg.fileURL, !fileURL.isEmpty, msg.fileType == "image" {
                     AsyncImage(url: URL(string: "\(baseURL)\(fileURL)")) { phase in
                         switch phase {
                         case .success(let image):
                             image.resizable().scaledToFit()
-                                .frame(maxWidth: 200, maxHeight: 150)
-                                .cornerRadius(10)
-                        default:
-                            ProgressView()
+                                .frame(maxWidth: 200, maxHeight: 150).cornerRadius(10)
+                        default: ProgressView()
                         }
                     }
                 }
@@ -1552,10 +1847,8 @@ struct ChatView: View {
     var chatInputBar: some View {
         HStack(spacing: 10) {
             TextField("Skriv en besked...", text: $messageInput)
-                .textFieldStyle(.roundedBorder)
-                .font(.body)
+                .textFieldStyle(.roundedBorder).font(.body)
                 .onSubmit { send() }
-
             Button(action: send) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 32))
@@ -1571,9 +1864,7 @@ struct ChatView: View {
 
     var closedBanner: some View {
         VStack(spacing: 10) {
-            Text("Denne samtale er lukket")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+            Text("Denne samtale er lukket").font(.subheadline).foregroundColor(.secondary)
             Button(action: {
                 viewModel.stopPolling()
                 viewModel.messages = []
@@ -1582,12 +1873,9 @@ struct ChatView: View {
                 viewModel.status = "open"
             }) {
                 Text("Start ny samtale")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 10)
-                    .background(wrombleRed)
-                    .cornerRadius(10)
+                    .font(.subheadline.weight(.bold)).foregroundColor(.white)
+                    .padding(.horizontal, 24).padding(.vertical, 10)
+                    .background(wrombleRed).cornerRadius(10)
             }
         }
         .padding()
@@ -1600,22 +1888,15 @@ struct ChatView: View {
         guard !text.isEmpty else { return }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         viewModel.sendMessage(text, senderName: nameInput)
-        let localMsg = ChatMessage(
+        viewModel.messages.append(ChatMessage(
             id: (viewModel.messages.last?.id ?? 0) + 1,
-            senderType: "customer",
-            senderName: nameInput,
-            message: text,
-            fileURL: nil,
-            fileType: nil,
-            fileName: nil,
-            createdAt: ""
-        )
-        viewModel.messages.append(localMsg)
+            senderType: "customer", senderName: nameInput, message: text,
+            fileURL: nil, fileType: nil, fileName: nil, createdAt: ""))
         messageInput = ""
     }
 }
 
-// MARK: - Profile View (Fully Native)
+// MARK: - Profile View
 
 struct ProfileView: View {
     @EnvironmentObject var appState: AppState
@@ -1624,23 +1905,19 @@ struct ProfileView: View {
     @State private var showBiometricAlert = false
     @State private var showShareSheet = false
     @State private var showLogin = false
+    @State private var showDeleteAccount = false
     @State private var loggedInUser: UserProfile?
 
     var body: some View {
         List {
-            // User section
             Section {
                 if let user = loggedInUser, user.id > 0 {
                     HStack(spacing: sizeClass == .regular ? 20 : 16) {
                         Image(systemName: "person.circle.fill")
-                            .font(.system(size: sizeClass == .regular ? 64 : 50))
-                            .foregroundColor(wrombleRed)
+                            .font(.system(size: sizeClass == .regular ? 64 : 50)).foregroundColor(wrombleRed)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(user.name)
-                                .font(sizeClass == .regular ? .title2.bold() : .title3.bold())
-                            Text(user.email)
-                                .font(sizeClass == .regular ? .body : .subheadline)
-                                .foregroundColor(.secondary)
+                            Text(user.name).font(sizeClass == .regular ? .title2.bold() : .title3.bold())
+                            Text(user.email).font(sizeClass == .regular ? .body : .subheadline).foregroundColor(.secondary)
                         }
                     }
                     .padding(.vertical, sizeClass == .regular ? 12 : 8)
@@ -1648,14 +1925,11 @@ struct ProfileView: View {
                     Button(action: { showLogin = true }) {
                         HStack(spacing: sizeClass == .regular ? 20 : 16) {
                             Image(systemName: "person.circle.fill")
-                                .font(.system(size: sizeClass == .regular ? 64 : 50))
-                                .foregroundColor(.secondary)
+                                .font(.system(size: sizeClass == .regular ? 64 : 50)).foregroundColor(.secondary)
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Log ind")
-                                    .font(sizeClass == .regular ? .title2.bold() : .title3.bold())
+                                Text("Log ind").font(sizeClass == .regular ? .title2.bold() : .title3.bold())
                                 Text("Log ind eller opret en konto")
-                                    .font(sizeClass == .regular ? .body : .subheadline)
-                                    .foregroundColor(.secondary)
+                                    .font(sizeClass == .regular ? .body : .subheadline).foregroundColor(.secondary)
                             }
                         }
                     }
@@ -1672,17 +1946,12 @@ struct ProfileView: View {
                     if newValue {
                         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
                             DispatchQueue.main.async {
-                                if granted {
-                                    UIApplication.shared.registerForRemoteNotifications()
-                                } else {
-                                    appState.notificationsEnabled = false
-                                }
+                                if granted { UIApplication.shared.registerForRemoteNotifications() }
+                                else { appState.notificationsEnabled = false }
                                 appState.save()
                             }
                         }
-                    } else {
-                        appState.save()
-                    }
+                    } else { appState.save() }
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }
             }
@@ -1700,12 +1969,10 @@ struct ProfileView: View {
 
                 if let loc = locationManager.location {
                     HStack {
-                        Text("Aktuel position")
-                            .foregroundColor(.secondary)
+                        Text("Aktuel position").foregroundColor(.secondary)
                         Spacer()
                         Text(String(format: "%.2f, %.2f", loc.coordinate.latitude, loc.coordinate.longitude))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(.caption).foregroundColor(.secondary)
                     }
                 }
             }
@@ -1727,13 +1994,15 @@ struct ProfileView: View {
                     showShareSheet = true
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }) {
-                    Label("Del Wromble med venner", systemImage: "square.and.arrow.up")
-                        .foregroundColor(.primary)
+                    Label("Del Wromble med venner", systemImage: "square.and.arrow.up").foregroundColor(.primary)
                 }
 
                 Link(destination: URL(string: "\(baseURL)/privacy-policy/app.php")!) {
-                    Label("Privatlivspolitik", systemImage: "hand.raised.fill")
-                        .foregroundColor(.primary)
+                    Label("Privatlivspolitik", systemImage: "hand.raised.fill").foregroundColor(.primary)
+                }
+
+                Link(destination: URL(string: "\(baseURL)/terms/app.php") ?? URL(string: baseURL)!) {
+                    Label("Vilkaar og betingelser", systemImage: "doc.text.fill").foregroundColor(.primary)
                 }
             }
 
@@ -1741,31 +2010,26 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.0 (6)")
-                        .foregroundColor(.secondary)
+                    Text("1.0 (7)").foregroundColor(.secondary)
                 }
-
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
                     Spacer()
                     Text(appState.networkAvailable ? "Forbundet" : "Ikke forbundet")
-                        .foregroundColor(appState.networkAvailable ? .green : .red)
-                        .font(.subheadline)
+                        .foregroundColor(appState.networkAvailable ? .green : .red).font(.subheadline)
                 }
-
                 if !appState.deviceToken.isEmpty {
                     HStack {
                         Label("Push token", systemImage: "antenna.radiowaves.left.and.right")
                         Spacer()
                         Text(String(appState.deviceToken.prefix(16)) + "...")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(.caption).foregroundColor(.secondary)
                     }
                 }
             }
 
-            if loggedInUser != nil && loggedInUser!.id > 0 {
-                Section {
+            if let user = loggedInUser, user.id > 0 {
+                Section(header: Text("Konto")) {
                     Button(action: {
                         loggedInUser = nil
                         UserDefaults.standard.removeObject(forKey: "loggedInUserId")
@@ -1775,9 +2039,15 @@ struct ProfileView: View {
                     }) {
                         HStack {
                             Spacer()
-                            Text("Log ud")
-                                .foregroundColor(.red)
-                                .font(.body.weight(.semibold))
+                            Text("Log ud").foregroundColor(.orange).font(.body.weight(.semibold))
+                            Spacer()
+                        }
+                    }
+
+                    Button(action: { showDeleteAccount = true }) {
+                        HStack {
+                            Spacer()
+                            Text("Slet konto").foregroundColor(.red).font(.body.weight(.semibold))
                             Spacer()
                         }
                     }
@@ -1801,28 +2071,33 @@ struct ProfileView: View {
                     }
                     showLogin = false
                 })
-                .navigationTitle("Konto")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Luk") { showLogin = false }
-                    }
-                }
+                .navigationTitle("Konto").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Luk") { showLogin = false } } }
+            }
+        }
+        .sheet(isPresented: $showDeleteAccount) {
+            if let user = loggedInUser {
+                AccountDeletionView(user: user, onDeleted: {
+                    loggedInUser = nil
+                    UserDefaults.standard.removeObject(forKey: "loggedInUserId")
+                    UserDefaults.standard.removeObject(forKey: "loggedInUserName")
+                    UserDefaults.standard.removeObject(forKey: "loggedInUserEmail")
+                    FavoritesManager.shared.favoriteIds.removeAll()
+                    UserDefaults.standard.removeObject(forKey: "favoriteRestaurants")
+                    showDeleteAccount = false
+                })
             }
         }
         .alert("Biometrisk login", isPresented: $showBiometricAlert) {
-            Button("OK") {
-                appState.biometricEnabled = false
-                appState.save()
-            }
+            Button("OK") { appState.biometricEnabled = false; appState.save() }
         } message: {
             Text("Biometrisk login er ikke tilgaengelig paa denne enhed.")
         }
         .onAppear {
             if let savedId = UserDefaults.standard.value(forKey: "loggedInUserId") as? Int, savedId > 0 {
-                let savedName = UserDefaults.standard.string(forKey: "loggedInUserName") ?? ""
-                let savedEmail = UserDefaults.standard.string(forKey: "loggedInUserEmail") ?? ""
-                loggedInUser = UserProfile(id: savedId, name: savedName, email: savedEmail, phone: nil, type: "customer")
+                let n = UserDefaults.standard.string(forKey: "loggedInUserName") ?? ""
+                let e = UserDefaults.standard.string(forKey: "loggedInUserEmail") ?? ""
+                loggedInUser = UserProfile(id: savedId, name: n, email: e, phone: nil, type: "customer")
             }
         }
     }
@@ -1849,10 +2124,7 @@ struct ProfileView: View {
         if ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) {
             ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Log ind med biometri") { success, _ in
                 DispatchQueue.main.async {
-                    if !success {
-                        appState.biometricEnabled = false
-                        appState.save()
-                    }
+                    if !success { appState.biometricEnabled = false; appState.save() }
                 }
             }
         } else {
@@ -1861,154 +2133,125 @@ struct ProfileView: View {
     }
 }
 
+// MARK: - Account Deletion
+
+struct AccountDeletionView: View {
+    let user: UserProfile
+    var onDeleted: () -> Void
+    @Environment(\.dismiss) var dismiss
+    @Environment(\.horizontalSizeClass) var sizeClass
+    @State private var password = ""
+    @State private var isDeleting = false
+    @State private var errorMessage = ""
+    @State private var showFinalConfirmation = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 24) {
+                    Spacer(minLength: 40)
+
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 60)).foregroundColor(.red)
+
+                    Text("Slet din konto")
+                        .font(.title.bold())
+
+                    Text("Dette vil permanent slette din konto og alle tilknyttede data, herunder ordrehistorik og samtaler. Denne handling kan ikke fortrydes.")
+                        .font(.body).foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 30)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("E-mail:").foregroundColor(.secondary)
+                            Text(user.email).font(.body.bold())
+                        }
+                        .padding(.horizontal, 30)
+
+                        SecureField("Indtast adgangskode for at bekraefte", text: $password)
+                            .textFieldStyle(.roundedBorder)
+                            .padding(.horizontal, 30)
+                    }
+
+                    if !errorMessage.isEmpty {
+                        Text(errorMessage).foregroundColor(.red).font(.subheadline)
+                            .padding(.horizontal, 30)
+                    }
+
+                    Button(action: { showFinalConfirmation = true }) {
+                        HStack {
+                            Image(systemName: "trash.fill")
+                            if isDeleting { ProgressView().tint(.white) }
+                            else { Text("Slet konto permanent").font(.headline) }
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
+                        .padding(.vertical, 16)
+                        .background(password.isEmpty ? Color.gray : Color.red)
+                        .cornerRadius(14)
+                    }
+                    .padding(.horizontal, 30)
+                    .disabled(password.isEmpty || isDeleting)
+
+                    Button("Annuller") { dismiss() }
+                        .foregroundColor(.secondary)
+
+                    Spacer(minLength: 40)
+                }
+            }
+            .navigationTitle("Slet konto")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Luk") { dismiss() } }
+            }
+            .alert("Er du helt sikker?", isPresented: $showFinalConfirmation) {
+                Button("Ja, slet min konto", role: .destructive) { deleteAccount() }
+                Button("Annuller", role: .cancel) {}
+            } message: {
+                Text("Din konto og alle data vil blive slettet permanent. Dette kan ikke fortrydes.")
+            }
+        }
+    }
+
+    func deleteAccount() {
+        isDeleting = true
+        errorMessage = ""
+        guard let url = URL(string: "\(baseURL)/api/delete-account.php") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["user_id": user.id, "email": user.email, "password": password]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            DispatchQueue.main.async {
+                isDeleting = false
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    errorMessage = "Netvaerksfejl. Proev igen."
+                    return
+                }
+                if let error = json["error"] as? String { errorMessage = error; return }
+                if json["success"] as? Bool == true {
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    onDeleted()
+                }
+            }
+        }.resume()
+    }
+}
+
 // MARK: - Share Sheet
 
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
-
     func makeUIViewController(context: Context) -> UIActivityViewController {
         let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
         vc.popoverPresentationController?.sourceView = UIView()
         return vc
     }
-
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
-
-// MARK: - WebView (checkout flow only)
-
-struct WrombleWebView: UIViewRepresentable {
-    @Binding var url: URL?
-
-    func makeCoordinator() -> WebCoordinator {
-        WebCoordinator()
-    }
-
-    func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.allowsInlineMediaPlayback = true
-        config.mediaTypesRequiringUserActionForPlayback = []
-
-        let prefs = WKWebpagePreferences()
-        prefs.allowsContentJavaScript = true
-        config.defaultWebpagePreferences = prefs
-
-        let userController = WKUserContentController()
-        let viewportScript = WKUserScript(
-            source: "var meta = document.querySelector('meta[name=viewport]'); if (!meta) { meta = document.createElement('meta'); meta.name = 'viewport'; document.head.appendChild(meta); } meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes';",
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: true
-        )
-        userController.addUserScript(viewportScript)
-        config.userContentController = userController
-
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        webView.uiDelegate = context.coordinator
-        webView.scrollView.bounces = true
-        webView.allowsBackForwardNavigationGestures = true
-        webView.isOpaque = false
-        webView.backgroundColor = .white
-        webView.scrollView.contentInsetAdjustmentBehavior = .automatic
-
-        let refreshControl = UIRefreshControl()
-        refreshControl.addTarget(context.coordinator, action: #selector(WebCoordinator.handleRefresh(_:)), for: .valueChanged)
-        webView.scrollView.refreshControl = refreshControl
-
-        context.coordinator.webView = webView
-
-        if let url = url {
-            webView.load(URLRequest(url: url))
-        }
-
-        return webView
-    }
-
-    func updateUIView(_ uiView: WKWebView, context: Context) {
-        if let newURL = url, uiView.url != newURL {
-            uiView.load(URLRequest(url: newURL))
-        }
-    }
-
-    class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
-        weak var webView: WKWebView?
-
-        @objc func handleRefresh(_ refreshControl: UIRefreshControl) {
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            webView?.reload()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                refreshControl.endRefreshing()
-            }
-        }
-
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            guard let url = navigationAction.request.url else {
-                decisionHandler(.allow)
-                return
-            }
-
-            let host = url.host ?? ""
-
-            if host.contains("wromble.dk") || host.isEmpty {
-                decisionHandler(.allow)
-                return
-            }
-
-            if url.scheme == "tel" || url.scheme == "mailto" {
-                UIApplication.shared.open(url)
-                decisionHandler(.cancel)
-                return
-            }
-
-            let authDomains = ["facebook.com", "fbcdn.net", "facebook.net",
-                               "google.com", "googleapis.com", "gstatic.com",
-                               "apple.com", "icloud.com",
-                               "stripe.com", "mobilepay"]
-            if authDomains.contains(where: { host.contains($0) }) {
-                decisionHandler(.allow)
-                return
-            }
-
-            if host.contains("maps.google") || host.contains("maps.apple") {
-                UIApplication.shared.open(url)
-                decisionHandler(.cancel)
-                return
-            }
-
-            UIApplication.shared.open(url)
-            decisionHandler(.cancel)
-        }
-
-        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            if navigationAction.targetFrame == nil || !(navigationAction.targetFrame!.isMainFrame) {
-                webView.load(navigationAction.request)
-            }
-            return nil
-        }
-
-        func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-            decisionHandler(.grant)
-        }
-
-        func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
-            let ac = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-            ac.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
-            if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
-               let rootVC = scene.windows.first?.rootViewController {
-                rootVC.present(ac, animated: true)
-            }
-        }
-
-        func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
-            let ac = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-            ac.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
-            ac.addAction(UIAlertAction(title: "Annuller", style: .cancel) { _ in completionHandler(false) })
-            if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
-               let rootVC = scene.windows.first?.rootViewController {
-                rootVC.present(ac, animated: true)
-            }
-        }
-    }
 }
 
 // MARK: - Location Manager
@@ -2033,9 +2276,7 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         location = locations.last
     }
 
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        print("Location error: \(error.localizedDescription)")
-    }
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {}
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         authorizationStatus = manager.authorizationStatus
@@ -2054,14 +2295,10 @@ class NetworkMonitor: ObservableObject {
 
     func start() {
         monitor.pathUpdateHandler = { [weak self] path in
-            DispatchQueue.main.async {
-                self?.isConnected = path.status == .satisfied
-            }
+            DispatchQueue.main.async { self?.isConnected = path.status == .satisfied }
         }
         monitor.start(queue: queue)
     }
 
-    deinit {
-        monitor.cancel()
-    }
+    deinit { monitor.cancel() }
 }
