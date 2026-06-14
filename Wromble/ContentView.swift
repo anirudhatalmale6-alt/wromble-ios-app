@@ -7,6 +7,18 @@ import Network
 let wrombleRed = Color(red: 226/255, green: 15/255, blue: 30/255)
 let baseURL = "https://wromble.dk"
 
+// MARK: - User Model
+
+struct UserProfile: Codable {
+    let id: Int
+    let name: String
+    let email: String
+    let phone: String?
+    let type: String
+}
+
+// MARK: - Root View
+
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @State private var showSplash = true
@@ -318,6 +330,212 @@ struct OnboardingView: View {
     }
 }
 
+// MARK: - Login View (Native)
+
+struct LoginView: View {
+    @EnvironmentObject var appState: AppState
+    @Environment(\.horizontalSizeClass) var sizeClass
+    @State private var isLogin = true
+    @State private var email = ""
+    @State private var password = ""
+    @State private var firstname = ""
+    @State private var lastname = ""
+    @State private var phone = ""
+    @State private var errorMessage = ""
+    @State private var isLoading = false
+    var onLogin: (UserProfile) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: sizeClass == .regular ? 28 : 20) {
+                Spacer(minLength: sizeClass == .regular ? 40 : 20)
+
+                Image("SplashLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: sizeClass == .regular ? 100 : 70, height: sizeClass == .regular ? 100 : 70)
+
+                Text(isLogin ? "Log ind" : "Opret konto")
+                    .font(sizeClass == .regular ? .largeTitle.bold() : .title.bold())
+
+                Text(isLogin ? "Log ind med din Wromble konto" : "Opret en gratis Wromble konto")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+
+                // Segment picker
+                Picker("", selection: $isLogin) {
+                    Text("Log ind").tag(true)
+                    Text("Opret konto").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
+
+                VStack(spacing: 14) {
+                    if !isLogin {
+                        HStack(spacing: 12) {
+                            inputField("Fornavn", text: $firstname, icon: "person.fill")
+                            inputField("Efternavn", text: $lastname, icon: "person.fill")
+                        }
+
+                        inputField("Telefon (valgfrit)", text: $phone, icon: "phone.fill", keyboard: .phonePad)
+                    }
+
+                    inputField("Email", text: $email, icon: "envelope.fill", keyboard: .emailAddress, autocap: false)
+
+                    HStack(spacing: 12) {
+                        Image(systemName: "lock.fill")
+                            .foregroundColor(.secondary)
+                            .frame(width: 20)
+                        SecureField("Adgangskode", text: $password)
+                            .textContentType(isLogin ? .password : .newPassword)
+                    }
+                    .padding(14)
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(12)
+                }
+                .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
+
+                if !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .font(.subheadline)
+                        .foregroundColor(.red)
+                        .multilineTextAlignment(.center)
+                }
+
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    if isLogin { doLogin() } else { doRegister() }
+                }) {
+                    Group {
+                        if isLoading {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text(isLogin ? "Log ind" : "Opret konto")
+                                .font(.headline)
+                        }
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
+                    .padding(.vertical, 16)
+                    .background((email.isEmpty || password.isEmpty) ? Color.gray : wrombleRed)
+                    .cornerRadius(14)
+                }
+                .disabled(email.isEmpty || password.isEmpty || isLoading)
+
+                Button(action: {
+                    onLogin(UserProfile(id: 0, name: "Gaest", email: "", phone: nil, type: "guest"))
+                }) {
+                    Text("Fortsaet uden login")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 4)
+
+                Spacer(minLength: 40)
+            }
+            .padding(.horizontal, sizeClass == .regular ? 60 : 24)
+        }
+    }
+
+    func inputField(_ placeholder: String, text: Binding<String>, icon: String, keyboard: UIKeyboardType = .default, autocap: Bool = true) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .foregroundColor(.secondary)
+                .frame(width: 20)
+            TextField(placeholder, text: text)
+                .keyboardType(keyboard)
+                .autocapitalization(autocap ? .words : .none)
+                .disableAutocorrection(!autocap)
+        }
+        .padding(14)
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(12)
+    }
+
+    func doLogin() {
+        isLoading = true
+        errorMessage = ""
+        guard let url = URL(string: "\(baseURL)/api/login.php") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: String] = ["email": email, "password": password, "mode": "customer"]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            DispatchQueue.main.async {
+                isLoading = false
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    errorMessage = "Netvaerksfejl. Proev igen."
+                    return
+                }
+                if let error = json["error"] as? String {
+                    errorMessage = error
+                    return
+                }
+                if let userDict = json["user"] as? [String: Any] {
+                    let user = UserProfile(
+                        id: userDict["id"] as? Int ?? 0,
+                        name: userDict["name"] as? String ?? "",
+                        email: userDict["email"] as? String ?? "",
+                        phone: userDict["phone"] as? String,
+                        type: userDict["type"] as? String ?? "customer"
+                    )
+                    onLogin(user)
+                }
+            }
+        }.resume()
+    }
+
+    func doRegister() {
+        isLoading = true
+        errorMessage = ""
+        guard !firstname.isEmpty else {
+            errorMessage = "Fornavn er paakraevet"
+            isLoading = false
+            return
+        }
+        guard let url = URL(string: "\(baseURL)/api/register.php") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: String] = [
+            "firstname": firstname,
+            "lastname": lastname,
+            "email": email,
+            "phone": phone,
+            "password": password
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            DispatchQueue.main.async {
+                isLoading = false
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    errorMessage = "Netvaerksfejl. Proev igen."
+                    return
+                }
+                if let error = json["error"] as? String {
+                    errorMessage = error
+                    return
+                }
+                if let userDict = json["user"] as? [String: Any] {
+                    let user = UserProfile(
+                        id: userDict["id"] as? Int ?? 0,
+                        name: userDict["name"] as? String ?? "",
+                        email: userDict["email"] as? String ?? "",
+                        phone: userDict["phone"] as? String,
+                        type: userDict["type"] as? String ?? "customer"
+                    )
+                    onLogin(user)
+                }
+            }
+        }.resume()
+    }
+}
+
 // MARK: - Home View (Native)
 
 struct Restaurant: Identifiable, Codable {
@@ -368,7 +586,6 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                // Header
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Wromble")
                         .font(.system(size: sizeClass == .regular ? 38 : 28, weight: .heavy))
@@ -381,7 +598,6 @@ struct HomeView: View {
                 .padding(.top, 8)
                 .padding(.bottom, 16)
 
-                // Search
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
@@ -394,7 +610,6 @@ struct HomeView: View {
                 .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                 .padding(.bottom, 16)
 
-                // Filter pills
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
                         ForEach(filters, id: \.self) { filter in
@@ -416,11 +631,9 @@ struct HomeView: View {
                 }
                 .padding(.bottom, 20)
 
-                // Restaurant list
                 if isLoading {
                     VStack(spacing: 16) {
-                        ProgressView()
-                            .scaleEffect(1.2)
+                        ProgressView().scaleEffect(1.2)
                         Text("Henter restauranter...")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
@@ -484,7 +697,6 @@ struct RestaurantCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Image
             ZStack(alignment: .topTrailing) {
                 if let img = restaurant.image, !img.isEmpty {
                     AsyncImage(url: URL(string: "\(baseURL)/uploads/\(img)")) { phase in
@@ -512,7 +724,6 @@ struct RestaurantCard: View {
                     .padding(10)
             }
 
-            // Info
             VStack(alignment: .leading, spacing: 6) {
                 Text(restaurant.name)
                     .font(sizeClass == .regular ? .title3.weight(.bold) : .headline)
@@ -595,7 +806,6 @@ struct RestaurantDetailView: View {
     var menuContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                // Header card
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
@@ -621,7 +831,6 @@ struct RestaurantDetailView: View {
                 }
                 .padding(sizeClass == .regular ? 24 : 16)
 
-                // Order button
                 Button(action: {
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     showWebOrder = true
@@ -747,7 +956,7 @@ struct MenuItemRow: View {
     }
 }
 
-// MARK: - Web Order View (for checkout flow)
+// MARK: - Web Order View (checkout only)
 
 struct WebOrderView: View {
     let restaurant: Restaurant
@@ -771,18 +980,18 @@ struct ExploreView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.horizontalSizeClass) var sizeClass
 
-    let categories: [(name: String, icon: String, type: Int?)] = [
-        ("Alle", "square.grid.2x2.fill", nil),
-        ("Restauranter", "fork.knife", 2),
-        ("Butikker", "bag.fill", 1),
-        ("Cafeer", "cup.and.saucer.fill", 2),
-        ("Bagerier", "birthday.cake.fill", 2),
+    let categories: [(name: String, icon: String)] = [
+        ("Alle", "square.grid.2x2.fill"),
+        ("Restauranter", "fork.knife"),
+        ("Butikker", "bag.fill"),
+        ("Cafeer", "cup.and.saucer.fill"),
+        ("Bagerier", "birthday.cake.fill"),
     ]
 
-    let quickActions: [(name: String, icon: String, url: String)] = [
-        ("Bordbestilling", "calendar.badge.clock", "\(baseURL)/"),
-        ("Wromble+", "star.fill", "\(baseURL)/"),
-        ("Bliv partner", "handshake.fill", "\(baseURL)/bliv-partner.php"),
+    let quickActions: [(name: String, icon: String)] = [
+        ("Bordbestilling", "calendar.badge.clock"),
+        ("Wromble+", "star.fill"),
+        ("Bliv partner", "handshake.fill"),
     ]
 
     var gridColumns: [GridItem] {
@@ -861,27 +1070,25 @@ struct ExploreView: View {
                         .font(sizeClass == .regular ? .title.bold() : .title2.bold())
                         .padding(.horizontal, sizeClass == .regular ? 24 : 16)
 
-                    LazyVGrid(columns: sizeClass == .regular ? [GridItem(.adaptive(minimum: 300), spacing: 16)] : [GridItem(.flexible())], spacing: sizeClass == .regular ? 16 : 0) {
-                        ForEach(quickActions, id: \.name) { action in
-                            HStack(spacing: sizeClass == .regular ? 18 : 14) {
-                                Image(systemName: action.icon)
-                                    .font(sizeClass == .regular ? .title2 : .title3)
-                                    .foregroundColor(wrombleRed)
-                                    .frame(width: sizeClass == .regular ? 40 : 32)
-                                Text(action.name)
-                                    .font(sizeClass == .regular ? .title3 : .body)
-                                    .foregroundColor(.primary)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .foregroundColor(.secondary)
-                                    .font(sizeClass == .regular ? .subheadline : .caption)
-                            }
-                            .padding(.horizontal, sizeClass == .regular ? 20 : 16)
-                            .padding(.vertical, sizeClass == .regular ? 18 : 14)
-                            .background(Color(.secondarySystemBackground))
-                            .cornerRadius(12)
-                            .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                    ForEach(quickActions, id: \.name) { action in
+                        HStack(spacing: sizeClass == .regular ? 18 : 14) {
+                            Image(systemName: action.icon)
+                                .font(sizeClass == .regular ? .title2 : .title3)
+                                .foregroundColor(wrombleRed)
+                                .frame(width: sizeClass == .regular ? 40 : 32)
+                            Text(action.name)
+                                .font(sizeClass == .regular ? .title3 : .body)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundColor(.secondary)
+                                .font(sizeClass == .regular ? .subheadline : .caption)
                         }
+                        .padding(.horizontal, sizeClass == .regular ? 20 : 16)
+                        .padding(.vertical, sizeClass == .regular ? 18 : 14)
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(12)
+                        .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                     }
                 }
 
@@ -900,15 +1107,200 @@ struct ExploreView: View {
 
 // MARK: - Orders View (Native)
 
+struct Order: Identifiable {
+    let id: Int
+    let companyName: String
+    let date: String
+    let total: Double
+    let status: String
+    let items: [OrderItem]
+}
+
+struct OrderItem {
+    let name: String
+    let quantity: Int
+    let price: Double
+}
+
 struct OrdersView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.horizontalSizeClass) var sizeClass
-    @State private var orderURL: URL? = URL(string: "\(baseURL)/private/orders/")
+    @State private var orders: [Order] = []
+    @State private var isLoading = true
+    @State private var showLogin = false
+    @State private var loggedInUser: UserProfile?
 
     var body: some View {
-        WrombleWebView(url: $orderURL)
-            .navigationTitle("Ordrer")
-            .navigationBarTitleDisplayMode(.inline)
+        Group {
+            if let user = loggedInUser, user.id > 0 {
+                ordersList(user: user)
+            } else if showLogin {
+                LoginView(onLogin: { user in
+                    loggedInUser = user
+                    if user.id > 0 {
+                        showLogin = false
+                        loadOrders(userId: user.id)
+                    }
+                })
+            } else {
+                loginPrompt
+            }
+        }
+        .navigationTitle("Ordrer")
+        .onAppear {
+            if let savedId = UserDefaults.standard.value(forKey: "loggedInUserId") as? Int, savedId > 0 {
+                let savedName = UserDefaults.standard.string(forKey: "loggedInUserName") ?? ""
+                let savedEmail = UserDefaults.standard.string(forKey: "loggedInUserEmail") ?? ""
+                loggedInUser = UserProfile(id: savedId, name: savedName, email: savedEmail, phone: nil, type: "customer")
+                loadOrders(userId: savedId)
+            }
+        }
+    }
+
+    var loginPrompt: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            Image(systemName: "bag.circle.fill")
+                .font(.system(size: sizeClass == .regular ? 70 : 50))
+                .foregroundColor(wrombleRed)
+            Text("Se dine ordrer")
+                .font(sizeClass == .regular ? .title.bold() : .title2.bold())
+            Text("Log ind for at se din ordrehistorik")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            Button(action: {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                showLogin = true
+            }) {
+                Text("Log ind")
+                    .font(.headline)
+                    .foregroundColor(.white)
+                    .frame(maxWidth: sizeClass == .regular ? 300 : .infinity)
+                    .padding(.vertical, 14)
+                    .background(wrombleRed)
+                    .cornerRadius(12)
+            }
+            .padding(.horizontal, 40)
+            Spacer()
+        }
+    }
+
+    func ordersList(user: UserProfile) -> some View {
+        Group {
+            if isLoading {
+                VStack {
+                    Spacer()
+                    ProgressView()
+                    Text("Henter ordrer...")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .padding(.top, 8)
+                    Spacer()
+                }
+            } else if orders.isEmpty {
+                VStack(spacing: 16) {
+                    Spacer()
+                    Image(systemName: "bag")
+                        .font(.system(size: 50))
+                        .foregroundColor(.secondary)
+                    Text("Ingen ordrer endnu")
+                        .font(.title3.bold())
+                    Text("Dine ordrer vises her naar du bestiller")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+            } else {
+                List(orders) { order in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(order.companyName)
+                                .font(.headline)
+                            Spacer()
+                            orderStatusBadge(order.status)
+                        }
+
+                        if !order.date.isEmpty {
+                            Text(order.date)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        ForEach(order.items, id: \.name) { item in
+                            HStack {
+                                Text("\(item.quantity)x \(item.name)")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text(String(format: "%.2f kr", item.price * Double(item.quantity)))
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        HStack {
+                            Spacer()
+                            Text(String(format: "Total: %.2f kr", order.total))
+                                .font(.subheadline.weight(.bold))
+                                .foregroundColor(wrombleRed)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
+    func orderStatusBadge(_ status: String) -> some View {
+        let (label, color): (String, Color) = {
+            switch status.lowercased() {
+            case "completed", "delivered": return ("Leveret", .green)
+            case "processing", "preparing": return ("Tilberedes", .orange)
+            case "cancelled": return ("Annulleret", .red)
+            default: return ("Afventer", .blue)
+            }
+        }()
+
+        return Text(label)
+            .font(.caption.weight(.bold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color)
+            .cornerRadius(6)
+    }
+
+    func loadOrders(userId: Int) {
+        isLoading = true
+        UserDefaults.standard.set(userId, forKey: "loggedInUserId")
+        guard let url = URL(string: "\(baseURL)/api/orders.php?user_id=\(userId)") else { return }
+
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            DispatchQueue.main.async {
+                isLoading = false
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let ordersArray = json["orders"] as? [[String: Any]] else { return }
+
+                orders = ordersArray.map { o in
+                    let items = (o["items"] as? [[String: Any]] ?? []).map { i in
+                        OrderItem(
+                            name: i["name"] as? String ?? "Ukendt",
+                            quantity: i["quantity"] as? Int ?? 1,
+                            price: i["price"] as? Double ?? 0
+                        )
+                    }
+                    return Order(
+                        id: o["id"] as? Int ?? 0,
+                        companyName: o["company_name"] as? String ?? "Ukendt",
+                        date: o["date"] as? String ?? "",
+                        total: o["total"] as? Double ?? 0,
+                        status: o["status"] as? String ?? "pending",
+                        items: items
+                    )
+                }
+            }
+        }.resume()
     }
 }
 
@@ -1085,8 +1477,7 @@ struct ChatView: View {
                 viewModel.startConversation(name: nameInput, email: emailInput)
             }) {
                 if viewModel.isLoading {
-                    ProgressView()
-                        .tint(.white)
+                    ProgressView().tint(.white)
                 } else {
                     Text("Start chat")
                         .font(.headline)
@@ -1141,17 +1532,15 @@ struct ChatView: View {
                     .foregroundColor(isCustomer ? .white : .primary)
                     .cornerRadius(16)
 
-                if let fileURL = msg.fileURL, !fileURL.isEmpty {
-                    if msg.fileType == "image" {
-                        AsyncImage(url: URL(string: "\(baseURL)\(fileURL)")) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image.resizable().scaledToFit()
-                                    .frame(maxWidth: 200, maxHeight: 150)
-                                    .cornerRadius(10)
-                            default:
-                                ProgressView()
-                            }
+                if let fileURL = msg.fileURL, !fileURL.isEmpty, msg.fileType == "image" {
+                    AsyncImage(url: URL(string: "\(baseURL)\(fileURL)")) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFit()
+                                .frame(maxWidth: 200, maxHeight: 150)
+                                .cornerRadius(10)
+                        default:
+                            ProgressView()
                         }
                     }
                 }
@@ -1234,23 +1623,44 @@ struct ProfileView: View {
     @Environment(\.horizontalSizeClass) var sizeClass
     @State private var showBiometricAlert = false
     @State private var showShareSheet = false
+    @State private var showLogin = false
+    @State private var loggedInUser: UserProfile?
 
     var body: some View {
         List {
+            // User section
             Section {
-                HStack(spacing: sizeClass == .regular ? 20 : 16) {
-                    Image(systemName: "person.circle.fill")
-                        .font(.system(size: sizeClass == .regular ? 64 : 50))
-                        .foregroundColor(wrombleRed)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Wromble")
-                            .font(sizeClass == .regular ? .title2.bold() : .title3.bold())
-                        Text("wromble.dk")
-                            .font(sizeClass == .regular ? .body : .subheadline)
-                            .foregroundColor(.secondary)
+                if let user = loggedInUser, user.id > 0 {
+                    HStack(spacing: sizeClass == .regular ? 20 : 16) {
+                        Image(systemName: "person.circle.fill")
+                            .font(.system(size: sizeClass == .regular ? 64 : 50))
+                            .foregroundColor(wrombleRed)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(user.name)
+                                .font(sizeClass == .regular ? .title2.bold() : .title3.bold())
+                            Text(user.email)
+                                .font(sizeClass == .regular ? .body : .subheadline)
+                                .foregroundColor(.secondary)
+                        }
                     }
+                    .padding(.vertical, sizeClass == .regular ? 12 : 8)
+                } else {
+                    Button(action: { showLogin = true }) {
+                        HStack(spacing: sizeClass == .regular ? 20 : 16) {
+                            Image(systemName: "person.circle.fill")
+                                .font(.system(size: sizeClass == .regular ? 64 : 50))
+                                .foregroundColor(.secondary)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Log ind")
+                                    .font(sizeClass == .regular ? .title2.bold() : .title3.bold())
+                                Text("Log ind eller opret en konto")
+                                    .font(sizeClass == .regular ? .body : .subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .padding(.vertical, sizeClass == .regular ? 12 : 8)
                 }
-                .padding(.vertical, sizeClass == .regular ? 12 : 8)
             }
 
             Section(header: Text("Notifikationer")) {
@@ -1331,7 +1741,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.0 (5)")
+                    Text("1.0 (6)")
                         .foregroundColor(.secondary)
                 }
 
@@ -1353,12 +1763,52 @@ struct ProfileView: View {
                     }
                 }
             }
+
+            if loggedInUser != nil && loggedInUser!.id > 0 {
+                Section {
+                    Button(action: {
+                        loggedInUser = nil
+                        UserDefaults.standard.removeObject(forKey: "loggedInUserId")
+                        UserDefaults.standard.removeObject(forKey: "loggedInUserName")
+                        UserDefaults.standard.removeObject(forKey: "loggedInUserEmail")
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    }) {
+                        HStack {
+                            Spacer()
+                            Text("Log ud")
+                                .foregroundColor(.red)
+                                .font(.body.weight(.semibold))
+                            Spacer()
+                        }
+                    }
+                }
+            }
         }
         .navigationTitle("Profil")
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(items: [
                 "Proev Wromble - bestil mad og specialvarer fra lokale butikker! Download her: https://apps.apple.com/dk/app/wromble/id6778496033"
             ])
+        }
+        .sheet(isPresented: $showLogin) {
+            NavigationStack {
+                LoginView(onLogin: { user in
+                    loggedInUser = user
+                    if user.id > 0 {
+                        UserDefaults.standard.set(user.id, forKey: "loggedInUserId")
+                        UserDefaults.standard.set(user.name, forKey: "loggedInUserName")
+                        UserDefaults.standard.set(user.email, forKey: "loggedInUserEmail")
+                    }
+                    showLogin = false
+                })
+                .navigationTitle("Konto")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Luk") { showLogin = false }
+                    }
+                }
+            }
         }
         .alert("Biometrisk login", isPresented: $showBiometricAlert) {
             Button("OK") {
@@ -1367,6 +1817,13 @@ struct ProfileView: View {
             }
         } message: {
             Text("Biometrisk login er ikke tilgaengelig paa denne enhed.")
+        }
+        .onAppear {
+            if let savedId = UserDefaults.standard.value(forKey: "loggedInUserId") as? Int, savedId > 0 {
+                let savedName = UserDefaults.standard.string(forKey: "loggedInUserName") ?? ""
+                let savedEmail = UserDefaults.standard.string(forKey: "loggedInUserEmail") ?? ""
+                loggedInUser = UserProfile(id: savedId, name: savedName, email: savedEmail, phone: nil, type: "customer")
+            }
         }
     }
 
@@ -1418,7 +1875,7 @@ struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
-// MARK: - WebView (kept for ordering flow)
+// MARK: - WebView (checkout flow only)
 
 struct WrombleWebView: UIViewRepresentable {
     @Binding var url: URL?
