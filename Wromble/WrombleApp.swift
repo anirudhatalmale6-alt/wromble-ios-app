@@ -42,6 +42,18 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let token = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
         AppState.shared.deviceToken = token
+        sendTokenToServer(token)
+    }
+
+    private func sendTokenToServer(_ token: String) {
+        guard let userId = UserDefaults.standard.string(forKey: "userId"), !userId.isEmpty else { return }
+        guard let url = URL(string: "\(baseURL)/api/register-push-token.php") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["user_id": Int(userId) ?? 0, "token": token, "platform": "ios"]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: request).resume()
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {

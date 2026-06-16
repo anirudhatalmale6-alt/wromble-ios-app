@@ -1396,8 +1396,10 @@ struct CartView: View {
                     loggedInUser = user
                     if user.id > 0 {
                         UserDefaults.standard.set(user.id, forKey: "loggedInUserId")
+                        UserDefaults.standard.set("\(user.id)", forKey: "userId")
                         UserDefaults.standard.set(user.name, forKey: "loggedInUserName")
                         UserDefaults.standard.set(user.email, forKey: "loggedInUserEmail")
+                        registerPushToken(userId: user.id)
                         showLoginSheet = false
                         submitOrder(userId: user.id)
                     }
@@ -1454,6 +1456,18 @@ struct CartView: View {
             return
         }
         submitOrder(userId: user.id)
+    }
+
+    func registerPushToken(userId: Int) {
+        let token = AppState.shared.deviceToken
+        guard !token.isEmpty else { return }
+        guard let url = URL(string: "\(baseURL)/api/register-push-token.php") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["user_id": userId, "token": token, "platform": "ios"]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: request).resume()
     }
 
     func submitOrder(userId: Int) {
