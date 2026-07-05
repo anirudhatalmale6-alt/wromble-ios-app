@@ -4,6 +4,7 @@ import CoreLocation
 import LocalAuthentication
 import Network
 import MapKit
+import AuthenticationServices
 
 let wrombleRed = Color(red: 226/255, green: 15/255, blue: 30/255)
 let baseURL = "https://wromble.dk"
@@ -514,6 +515,20 @@ struct LoginView: View {
                 }
                 .disabled(email.isEmpty || password.isEmpty || isLoading)
 
+                HStack {
+                    Rectangle().fill(Color(.separator)).frame(height: 1)
+                    Text("eller").font(.caption).foregroundColor(.secondary)
+                    Rectangle().fill(Color(.separator)).frame(height: 1)
+                }
+                .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
+
+                SignInWithAppleButton(.signIn, onRequest: { request in
+                    request.requestedScopes = [.fullName, .email]
+                }, onCompletion: handleAppleSignIn)
+                .signInWithAppleButtonStyle(.black)
+                .frame(maxWidth: sizeClass == .regular ? 400 : .infinity, minHeight: 50)
+                .cornerRadius(14)
+
                 Button(action: {
                     onLogin(UserProfile(id: 0, name: "Gaest", email: "", phone: nil, type: "guest"))
                 }) {
@@ -523,6 +538,47 @@ struct LoginView: View {
                 Spacer(minLength: 40)
             }
             .padding(.horizontal, sizeClass == .regular ? 60 : 24)
+        }
+    }
+
+    func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                  let tokenData = credential.identityToken,
+                  let idToken = String(data: tokenData, encoding: .utf8) else {
+                errorMessage = "Kunne ikke laese Apple-login"
+                return
+            }
+            let fn = credential.fullName?.givenName ?? ""
+            let ln = credential.fullName?.familyName ?? ""
+            isLoading = true
+            errorMessage = ""
+            guard let url = URL(string: "\(baseURL)/api/apple-login.php") else { return }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: [
+                "id_token": idToken, "firstname": fn, "lastname": ln
+            ])
+            URLSession.shared.dataTask(with: request) { data, _, _ in
+                DispatchQueue.main.async {
+                    isLoading = false
+                    guard let data = data,
+                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        errorMessage = "Netvaerksfejl. Proev igen."; return
+                    }
+                    if let error = json["error"] as? String { errorMessage = error; return }
+                    if let u = json["user"] as? [String: Any] {
+                        onLogin(UserProfile(
+                            id: u["id"] as? Int ?? 0, name: u["name"] as? String ?? "",
+                            email: u["email"] as? String ?? "", phone: u["phone"] as? String,
+                            type: u["type"] as? String ?? "customer"))
+                    }
+                }
+            }.resume()
+        case .failure(let error):
+            errorMessage = "Apple-login mislykkedes: \(error.localizedDescription)"
         }
     }
 
@@ -943,48 +999,91 @@ struct MapTabView: View {
         span: MKCoordinateSpan(latitudeDelta: 0.15, longitudeDelta: 0.15)
     )
     @State private var selectedRestaurant: Restaurant?
+    @State private var highlightedId: Int?
 
     var mappableRestaurants: [Restaurant] {
         restaurants.filter { $0.lat != 0 || $0.lng != 0 }
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
+        ZStack(alignment: .bottom) {
             Map(coordinateRegion: $region, showsUserLocation: true, annotationItems: mappableRestaurants) { restaurant in
                 MapAnnotation(coordinate: CLLocationCoordinate2D(latitude: restaurant.lat, longitude: restaurant.lng)) {
                     Button(action: {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        selectedRestaurant = restaurant
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                            highlightedId = restaurant.id
+                        }
                     }) {
-                        VStack(spacing: 2) {
+                        let isHighlighted = highlightedId == restaurant.id
+                        VStack(spacing: 3) {
                             ZStack {
                                 Circle()
                                     .fill(wrombleRed)
-                                    .frame(width: 36, height: 36)
+                                    .frame(width: isHighlighted ? 44 : 36, height: isHighlighted ? 44 : 36)
                                 Image(systemName: restaurant.type == 2 ? "fork.knife" : "bag.fill")
-                                    .font(.system(size: 16, weight: .bold))
+                                    .font(.system(size: isHighlighted ? 19 : 16, weight: .bold))
                                     .foregroundColor(.white)
                             }
-                            .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
-                            Text(restaurant.name)
-                                .font(.caption2.bold())
-                                .foregroundColor(.primary)
-                                .lineLimit(1)
-                                .padding(.horizontal, 4).padding(.vertical, 2)
-                                .background(.ultraThinMaterial)
-                                .cornerRadius(4)
+                            .overlay(Circle().stroke(.white, lineWidth: 2.5))
+                            .shadow(color: .black.opacity(0.25), radius: isHighlighted ? 6 : 3, y: 2)
+
+                            if isHighlighted {
+                                Text(restaurant.name)
+                                    .font(.caption2.bold())
+                                    .foregroundColor(.primary)
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 6).padding(.vertical, 3)
+                                    .background(.ultraThinMaterial, in: Capsule())
+                                    .transition(.scale.combined(with: .opacity))
+                            }
                         }
+                        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: isHighlighted)
                     }
                 }
             }
             .edgesIgnoringSafeArea(.bottom)
+            .overlay(alignment: .top) {
+                if isLoading {
+                    ProgressView()
+                        .padding(14)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                        .padding(.top, 12)
+                }
+            }
 
-            if isLoading {
-                ProgressView()
-                    .padding(16)
+            if !mappableRestaurants.isEmpty {
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(mappableRestaurants) { restaurant in
+                                MapRestaurantCard(
+                                    restaurant: restaurant,
+                                    isHighlighted: highlightedId == restaurant.id
+                                )
+                                .id(restaurant.id)
+                                .onTapGesture {
+                                    selectedRestaurant = restaurant
+                                }
+                                .onAppear {
+                                    // Keep the map pin in sync as the person scrolls the carousel.
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                    }
                     .background(.ultraThinMaterial)
-                    .cornerRadius(12)
-                    .padding(.top, 60)
+                    .onChange(of: highlightedId) { id in
+                        guard let id = id else { return }
+                        withAnimation { proxy.scrollTo(id, anchor: .center) }
+                        if let r = mappableRestaurants.first(where: { $0.id == id }) {
+                            withAnimation {
+                                region.center = CLLocationCoordinate2D(latitude: r.lat, longitude: r.lng)
+                            }
+                        }
+                    }
+                }
             }
         }
         .navigationTitle("Kort")
@@ -1034,6 +1133,7 @@ struct MapTabView: View {
                 isLoading = false
                 if let first = mappableRestaurants.first, locationManager.location == nil {
                     region.center = CLLocationCoordinate2D(latitude: first.lat, longitude: first.lng)
+                    highlightedId = first.id
                 } else if let loc = locationManager.location {
                     region.center = loc.coordinate
                 }
@@ -1041,6 +1141,44 @@ struct MapTabView: View {
         } catch {
             await MainActor.run { isLoading = false }
         }
+    }
+}
+
+struct MapRestaurantCard: View {
+    let restaurant: Restaurant
+    let isHighlighted: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color(.secondarySystemBackground))
+                    .frame(width: 46, height: 46)
+                Image(systemName: restaurant.type == 2 ? "fork.knife" : "bag.fill")
+                    .foregroundColor(wrombleRed)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(restaurant.name)
+                    .font(.subheadline.bold())
+                    .lineLimit(1)
+                Text(restaurant.address)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(10)
+        .frame(width: 230)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(.systemBackground))
+                .shadow(color: .black.opacity(isHighlighted ? 0.15 : 0.06), radius: isHighlighted ? 8 : 4, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(isHighlighted ? wrombleRed : .clear, lineWidth: 2)
+        )
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isHighlighted)
     }
 }
 
