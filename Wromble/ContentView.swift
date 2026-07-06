@@ -12,6 +12,14 @@ import UIKit
 let wrombleRed = Color(red: 226/255, green: 15/255, blue: 30/255)
 let baseURL = "https://wromble.dk"
 
+// API'et returnerer nogle billeder som fulde URL'er (https://...) og andre som filnavne.
+// Denne helper undgaar dobbelt-URL som https://wromble.dk/uploads/https://...
+func wrombleImageURL(_ path: String?) -> URL? {
+    guard let p = path, !p.isEmpty else { return nil }
+    if p.hasPrefix("http") { return URL(string: p) }
+    return URL(string: "\(baseURL)/uploads/\(p)")
+}
+
 // MARK: - Models
 
 struct UserProfile: Codable {
@@ -861,7 +869,7 @@ struct FavoriteCard: View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topTrailing) {
                 if let img = restaurant.image, !img.isEmpty {
-                    AsyncImage(url: URL(string: "\(baseURL)/uploads/\(img)")) { phase in
+                    AsyncImage(url: wrombleImageURL(img)) { phase in
                         switch phase {
                         case .success(let image): image.resizable().scaledToFill()
                         default: placeholder
@@ -915,7 +923,7 @@ struct RestaurantCard: View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .topTrailing) {
                 if let img = restaurant.image, !img.isEmpty {
-                    AsyncImage(url: URL(string: "\(baseURL)/uploads/\(img)")) { phase in
+                    AsyncImage(url: wrombleImageURL(img)) { phase in
                         switch phase {
                         case .success(let image): image.resizable().scaledToFill()
                         default: restaurantPlaceholder
@@ -1376,7 +1384,7 @@ struct MenuItemRow: View {
             Spacer()
 
             if let img = item.image, !img.isEmpty {
-                AsyncImage(url: URL(string: "\(baseURL)/uploads/\(img)")) { phase in
+                AsyncImage(url: wrombleImageURL(img)) { phase in
                     switch phase {
                     case .success(let image): image.resizable().scaledToFill()
                     default: Color(.tertiarySystemBackground)
