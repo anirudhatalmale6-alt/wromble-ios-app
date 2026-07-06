@@ -5,6 +5,9 @@ import LocalAuthentication
 import Network
 import MapKit
 import AuthenticationServices
+import PhotosUI
+import UniformTypeIdentifiers
+import UIKit
 
 let wrombleRed = Color(red: 226/255, green: 15/255, blue: 30/255)
 let baseURL = "https://wromble.dk"
@@ -1813,8 +1816,10 @@ class ChatViewModel: ObservableObject {
     @Published var status: String = "open"
     @Published var isStarted = false
     @Published var isLoading = false
+    @Published var isUploading = false
     private var pollTimer: Timer?
     private var lastMessageId = 0
+    private var seenIds = Set<Int>()
 
     func startConversation(name: String, email: String) {
         isLoading = true
@@ -1851,7 +1856,54 @@ class ChatViewModel: ObservableObject {
             "sender_name": senderName, "message": text
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
+        URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+            DispatchQueue.main.async { self?.poll() }
+        }.resume()
+    }
+
+    // Upload a photo or file to the same backend as the website (chat-upload.php)
+    func uploadData(_ fileData: Data, filename: String, mimeType: String, senderName: String) {
+        guard conversationId > 0 else { return }
+        guard let url = URL(string: "\(baseURL)/api/chat-upload.php") else { return }
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        func field(_ name: String, _ value: String) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(value)\r\n".data(using: .utf8)!)
+        }
+        field("conversation_id", String(conversationId))
+        field("sender_type", "customer")
+        field("sender_name", senderName)
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+        body.append(fileData)
+        body.append("\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        isUploading = true
+        URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+            DispatchQueue.main.async {
+                self?.isUploading = false
+                self?.poll()
+            }
+        }.resume()
+    }
+
+    func resetConversation() {
+        stopPolling()
+        messages = []
+        conversationId = 0
+        isStarted = false
+        status = "open"
+        lastMessageId = 0
+        seenIds.removeAll()
     }
 
     func startPolling() {
@@ -1872,23 +1924,23 @@ class ChatViewModel: ObservableObject {
                   let msgsArray = json["messages"] as? [[String: Any]] else { return }
 
             let newStatus = json["status"] as? String ?? "open"
-            var newMessages: [ChatMessage] = []
-            for msg in msgsArray {
-                newMessages.append(ChatMessage(
-                    id: msg["id"] as? Int ?? 0,
-                    senderType: msg["sender_type"] as? String ?? "",
-                    senderName: msg["sender_name"] as? String ?? "",
-                    message: msg["message"] as? String ?? "",
-                    fileURL: msg["file_url"] as? String,
-                    fileType: msg["file_type"] as? String,
-                    fileName: msg["file_name"] as? String,
-                    createdAt: msg["created_at"] as? String ?? ""))
-            }
             DispatchQueue.main.async {
-                self?.status = newStatus
-                if !newMessages.isEmpty {
-                    self?.messages.append(contentsOf: newMessages)
-                    self?.lastMessageId = newMessages.last?.id ?? self?.lastMessageId ?? 0
+                guard let self = self else { return }
+                self.status = newStatus
+                for msg in msgsArray {
+                    let mid = msg["id"] as? Int ?? 0
+                    if mid > 0 && self.seenIds.contains(mid) { continue }
+                    if mid > 0 { self.seenIds.insert(mid) }
+                    self.messages.append(ChatMessage(
+                        id: mid,
+                        senderType: msg["sender_type"] as? String ?? "",
+                        senderName: msg["sender_name"] as? String ?? "",
+                        message: msg["message"] as? String ?? "",
+                        fileURL: msg["file_url"] as? String,
+                        fileType: msg["file_type"] as? String,
+                        fileName: msg["file_name"] as? String,
+                        createdAt: msg["created_at"] as? String ?? ""))
+                    if mid > self.lastMessageId { self.lastMessageId = mid }
                 }
             }
         }.resume()
@@ -1901,6 +1953,11 @@ struct ChatView: View {
     @State private var nameInput = ""
     @State private var emailInput = ""
     @State private var messageInput = ""
+    @State private var showAttachDialog = false
+    @State private var showCamera = false
+    @State private var showPhotoPicker = false
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var showFileImporter = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1970,24 +2027,47 @@ struct ChatView: View {
 
     func chatBubble(_ msg: ChatMessage) -> some View {
         let isCustomer = msg.senderType == "customer"
+        let hasFile = (msg.fileURL != nil && !(msg.fileURL ?? "").isEmpty)
+        let isPlaceholder = msg.message == "[Billede]" || msg.message.hasPrefix("[Fil:")
+        let showText = !msg.message.isEmpty && !(hasFile && isPlaceholder)
         return HStack {
             if isCustomer { Spacer(minLength: 60) }
             VStack(alignment: isCustomer ? .trailing : .leading, spacing: 4) {
                 if !isCustomer {
                     Text(msg.senderName).font(.caption2.weight(.semibold)).foregroundColor(.secondary)
                 }
-                Text(msg.message).font(.body)
-                    .padding(.horizontal, 14).padding(.vertical, 10)
-                    .background(isCustomer ? wrombleRed : Color(.secondarySystemBackground))
-                    .foregroundColor(isCustomer ? .white : .primary)
-                    .cornerRadius(16)
-                if let fileURL = msg.fileURL, !fileURL.isEmpty, msg.fileType == "image" {
-                    AsyncImage(url: URL(string: "\(baseURL)\(fileURL)")) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFit()
-                                .frame(maxWidth: 200, maxHeight: 150).cornerRadius(10)
-                        default: ProgressView()
+                if showText {
+                    Text(msg.message).font(.body)
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .background(isCustomer ? wrombleRed : Color(.secondarySystemBackground))
+                        .foregroundColor(isCustomer ? .white : .primary)
+                        .cornerRadius(16)
+                }
+                if let fileURL = msg.fileURL, !fileURL.isEmpty {
+                    if msg.fileType == "image" {
+                        AsyncImage(url: URL(string: "\(baseURL)\(fileURL)")) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image.resizable().scaledToFit()
+                                    .frame(maxWidth: 200, maxHeight: 200).cornerRadius(10)
+                            case .failure:
+                                Image(systemName: "photo").foregroundColor(.secondary)
+                            default: ProgressView()
+                            }
+                        }
+                    } else {
+                        Button(action: {
+                            if let u = URL(string: "\(baseURL)\(fileURL)") { UIApplication.shared.open(u) }
+                        }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "doc.fill")
+                                Text(msg.fileName ?? "Fil").lineLimit(1)
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .background(isCustomer ? wrombleRed : Color(.secondarySystemBackground))
+                            .foregroundColor(isCustomer ? .white : .primary)
+                            .cornerRadius(16)
                         }
                     }
                 }
@@ -1997,32 +2077,89 @@ struct ChatView: View {
     }
 
     var chatInputBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
+            Button(action: { showAttachDialog = true }) {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 22))
+                    .foregroundColor(viewModel.isUploading ? .gray : wrombleRed)
+            }
+            .disabled(viewModel.isUploading)
             TextField("Skriv en besked...", text: $messageInput)
                 .textFieldStyle(.roundedBorder).font(.body)
                 .onSubmit { send() }
-            Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 32))
-                    .foregroundColor(messageInput.isEmpty ? .gray : wrombleRed)
+            if viewModel.isUploading {
+                ProgressView().frame(width: 32, height: 32)
+            } else {
+                Button(action: send) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 32))
+                        .foregroundColor(messageInput.isEmpty ? .gray : wrombleRed)
+                }
+                .disabled(messageInput.isEmpty)
             }
-            .disabled(messageInput.isEmpty)
         }
         .padding(.horizontal, sizeClass == .regular ? 20 : 14)
         .padding(.vertical, 10)
         .background(Color(.systemBackground))
         .overlay(Divider(), alignment: .top)
+        .confirmationDialog("Vedhæft", isPresented: $showAttachDialog, titleVisibility: .visible) {
+            Button("Tag billede") { showCamera = true }
+            Button("Vælg billede") { showPhotoPicker = true }
+            Button("Vælg fil") { showFileImporter = true }
+            Button("Annuller", role: .cancel) {}
+        }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraPicker { image in
+                if let jpeg = image.jpegData(compressionQuality: 0.7) {
+                    viewModel.uploadData(jpeg, filename: "billede.jpg", mimeType: "image/jpeg", senderName: nameInput)
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhoto, matching: .images)
+        .onChange(of: selectedPhoto) { newItem in
+            guard let newItem = newItem else { return }
+            Task {
+                if let data = try? await newItem.loadTransferable(type: Data.self),
+                   let ui = UIImage(data: data),
+                   let jpeg = ui.jpegData(compressionQuality: 0.7) {
+                    await MainActor.run {
+                        viewModel.uploadData(jpeg, filename: "billede.jpg", mimeType: "image/jpeg", senderName: nameInput)
+                    }
+                }
+                await MainActor.run { selectedPhoto = nil }
+            }
+        }
+        .fileImporter(isPresented: $showFileImporter,
+                      allowedContentTypes: allowedUploadTypes,
+                      allowsMultipleSelection: false) { result in
+            handleFileImport(result)
+        }
+    }
+
+    var allowedUploadTypes: [UTType] {
+        var types: [UTType] = [.pdf, .image, .plainText]
+        for ext in ["doc", "docx", "xls", "xlsx"] {
+            if let t = UTType(filenameExtension: ext) { types.append(t) }
+        }
+        return types
+    }
+
+    func handleFileImport(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else { return }
+        let didAccess = url.startAccessingSecurityScopedResource()
+        defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else { return }
+        if data.count > 10 * 1024 * 1024 { return }
+        viewModel.uploadData(data, filename: url.lastPathComponent,
+                             mimeType: "application/octet-stream", senderName: nameInput)
     }
 
     var closedBanner: some View {
         VStack(spacing: 10) {
             Text("Denne samtale er lukket").font(.subheadline).foregroundColor(.secondary)
             Button(action: {
-                viewModel.stopPolling()
-                viewModel.messages = []
-                viewModel.conversationId = 0
-                viewModel.isStarted = false
-                viewModel.status = "open"
+                viewModel.resetConversation()
             }) {
                 Text("Start ny samtale")
                     .font(.subheadline.weight(.bold)).foregroundColor(.white)
@@ -2039,12 +2176,41 @@ struct ChatView: View {
         let text = messageInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        viewModel.sendMessage(text, senderName: nameInput)
-        viewModel.messages.append(ChatMessage(
-            id: (viewModel.messages.last?.id ?? 0) + 1,
-            senderType: "customer", senderName: nameInput, message: text,
-            fileURL: nil, fileType: nil, fileName: nil, createdAt: ""))
         messageInput = ""
+        viewModel.sendMessage(text, senderName: nameInput)
+    }
+}
+
+// MARK: - Camera Picker (til billeder i chat)
+
+struct CameraPicker: UIViewControllerRepresentable {
+    var onImage: (UIImage) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = UIImagePickerController.isSourceTypeAvailable(.camera) ? .camera : .photoLibrary
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: CameraPicker
+        init(_ parent: CameraPicker) { self.parent = parent }
+
+        func imagePickerController(_ picker: UIImagePickerController,
+                                   didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            if let image = info[.originalImage] as? UIImage { parent.onImage(image) }
+            parent.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
     }
 }
 

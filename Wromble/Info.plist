@@ -19,7 +19,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.1</string>
 	<key>CFBundleVersion</key>
-	<string>8</string>
+	<string>9</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
@@ -52,7 +52,9 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>Wromble bruger kameraet til videoopkald med kundeservice</string>
+	<string>Wromble bruger kameraet til at tage og sende billeder i kundeservice-chatten</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Wromble bruger dit fotobibliotek, saa du kan sende billeder i kundeservice-chatten</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Wromble bruger mikrofonen til tale under videoopkald</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
