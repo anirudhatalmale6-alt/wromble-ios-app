@@ -900,12 +900,57 @@ struct CompanyOrder: Codable, Identifiable {
     let payment: Int
     let table: Bool
     let isNew: Bool
+    let delivered: Bool
     let status: String
     let items: [CompanyOrderItem]
     enum CodingKeys: String, CodingKey {
-        case id, customer, phone, address, amount, delivery, payment, table, status, items
+        case id, customer, phone, address, amount, delivery, payment, table, status, items, delivered
         case isNew = "is_new"
     }
+}
+
+// MARK: - Forretnings back-office modeller
+
+struct CompanyProfile: Codable {
+    var id: Int
+    var companyname: String
+    var email: String
+    var companytype: Int
+    var firstname_contact: String
+    var lastname_contact: String
+    var adress: String
+    var zipcode: String
+    var city: String
+    var phone_mobile: String
+    var specialities: String
+    var website: String
+    var description: String
+    var briefdescription: String
+    var shop_status: String
+    var com_delivery: Int
+    var com_delivery_price: Int
+    var com_delivery_time: String
+    var logo: String?
+}
+
+struct CompanyHourDay: Codable, Identifiable {
+    var weekday: String
+    var store_open: String
+    var store_close: String
+    var bring_open: String
+    var bring_close: String
+    var id: String { weekday }
+}
+
+struct CustomerProfileData: Codable {
+    var id: Int
+    var firstname: String
+    var lastname: String
+    var email: String
+    var adress: String
+    var zipcode: String
+    var city: String
+    var phone: String
 }
 
 func paymentLabel(_ p: Int) -> String {
@@ -926,7 +971,7 @@ struct StaffDashboardView: View {
                 if session.type == "rider" {
                     DriverDashboardView(session: session)
                 } else {
-                    CompanyOrdersView(session: session)
+                    CompanyDashboardView(session: session)
                 }
             }
             .toolbar {
@@ -1104,6 +1149,7 @@ struct CompanyOrdersView: View {
     @State private var isLoading = true
     @State private var actionId: Int?
     @State private var toast: String?
+    @State private var tab = 0   // 0 = Aktive, 1 = Historik
 
     var newOrders: [CompanyOrder] { orders.filter { $0.isNew } }
     var activeOrders: [CompanyOrder] { orders.filter { !$0.isNew } }
@@ -1111,12 +1157,18 @@ struct CompanyOrdersView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
-                headerCard
+                Picker("", selection: $tab) {
+                    Text("Aktive").tag(0)
+                    Text("Historik").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: tab) { _ in Task { await load() } }
+
                 if isLoading {
                     ProgressView().scaleEffect(1.2).padding(.top, 50)
                 } else if orders.isEmpty {
                     emptyState
-                } else {
+                } else if tab == 0 {
                     if !newOrders.isEmpty {
                         sectionHeader("Nye ordrer", count: newOrders.count)
                         ForEach(newOrders) { orderCard($0) }
@@ -1125,31 +1177,17 @@ struct CompanyOrdersView: View {
                         sectionHeader("I gang", count: activeOrders.count)
                         ForEach(activeOrders) { orderCard($0) }
                     }
+                } else {
+                    ForEach(orders) { orderCard($0) }
                 }
             }
             .padding(16)
         }
-        .navigationTitle("Forretning")
+        .navigationTitle("Ordrer")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
         .task { await load() }
         .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
-    }
-
-    var headerCard: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                Circle().fill(wrombleRed.opacity(0.12)).frame(width: 52, height: 52)
-                Image(systemName: "building.2.fill").font(.system(size: 22, weight: .semibold)).foregroundColor(wrombleRed)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(session.name.isEmpty ? "Forretning" : session.name).font(.headline)
-                Text("\(newOrders.count) nye, \(activeOrders.count) i gang").font(.subheadline).foregroundColor(.secondary)
-            }
-            Spacer()
-        }
-        .padding(16)
-        .background(Color(.secondarySystemBackground)).cornerRadius(16)
     }
 
     func sectionHeader(_ title: String, count: Int) -> some View {
@@ -1229,8 +1267,8 @@ struct CompanyOrdersView: View {
                 .padding(.top, 2)
             } else {
                 HStack(spacing: 6) {
-                    Image(systemName: "checkmark.seal.fill").foregroundColor(.green)
-                    Text("Accepteret").font(.subheadline.weight(.semibold)).foregroundColor(.green)
+                    Image(systemName: order.delivered ? "checkmark.circle.fill" : "checkmark.seal.fill").foregroundColor(.green)
+                    Text(order.delivered ? "Leveret" : "Accepteret").font(.subheadline.weight(.semibold)).foregroundColor(.green)
                 }
                 .padding(.top, 2)
             }
@@ -1250,7 +1288,9 @@ struct CompanyOrdersView: View {
     }
 
     func load() async {
-        guard let url = URL(string: "\(baseURL)/api/app-company-orders.php?company_id=\(session.companyId)") else { return }
+        await MainActor.run { isLoading = true }
+        let scope = tab == 1 ? "history" : "active"
+        guard let url = URL(string: "\(baseURL)/api/app-company-orders.php?company_id=\(session.companyId)&scope=\(scope)") else { return }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             struct Resp: Codable { let orders: [CompanyOrder] }
@@ -1290,6 +1330,454 @@ struct CompanyOrdersView: View {
         withAnimation { toast = msg }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
             if toast == msg { withAnimation { toast = nil } }
+        }
+    }
+}
+
+// MARK: - Forretnings back-office (native indstillinger som paa wromble.dk)
+
+struct CompanyDashboardView: View {
+    let session: StaffSession
+
+    var body: some View {
+        List {
+            Section {
+                HStack(spacing: 14) {
+                    ZStack {
+                        Circle().fill(wrombleRed.opacity(0.12)).frame(width: 52, height: 52)
+                        Image(systemName: "building.2.fill").font(.system(size: 22, weight: .semibold)).foregroundColor(wrombleRed)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(session.name.isEmpty ? "Forretning" : session.name).font(.headline)
+                        Text(session.email).font(.subheadline).foregroundColor(.secondary).lineLimit(1)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            Section(header: Text("Administrer")) {
+                NavigationLink { CompanyOrdersView(session: session) } label: {
+                    Label("Ordrer", systemImage: "bag.fill").foregroundColor(.primary)
+                }
+                NavigationLink { CompanyMenuView(session: session) } label: {
+                    Label("Menukort", systemImage: "list.bullet.rectangle").foregroundColor(.primary)
+                }
+                NavigationLink { CompanyHoursView(session: session) } label: {
+                    Label("Aabningstider", systemImage: "clock.fill").foregroundColor(.primary)
+                }
+                NavigationLink { CompanyProfileView(session: session) } label: {
+                    Label("Indstillinger", systemImage: "gearshape.fill").foregroundColor(.primary)
+                }
+            }
+        }
+        .navigationTitle(session.name.isEmpty ? "Forretning" : session.name)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// Redigering af en enkelt ret
+struct MenuItemEdit: Identifiable {
+    let id: String
+    var itemId: Int
+    var catId: Int
+    var headline: String
+    var description: String
+    var price: String
+}
+
+struct CompanyMenuView: View {
+    let session: StaffSession
+    @State private var categories: [MenuCategory] = []
+    @State private var isLoading = true
+    @State private var editing: MenuItemEdit?
+    @State private var showAddCategory = false
+    @State private var newCatName = ""
+    @State private var toast: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if isLoading {
+                    ProgressView().scaleEffect(1.2).frame(maxWidth: .infinity).padding(.top, 50)
+                } else {
+                    if categories.isEmpty {
+                        Text("Ingen kategorier endnu. Opret din foerste kategori nedenfor.")
+                            .font(.subheadline).foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center).padding(.top, 30)
+                    }
+                    ForEach(categories) { cat in categorySection(cat) }
+
+                    Button(action: { newCatName = ""; showAddCategory = true }) {
+                        Label("Ny kategori", systemImage: "folder.badge.plus")
+                            .font(.subheadline.weight(.semibold)).foregroundColor(wrombleRed)
+                            .frame(maxWidth: .infinity).padding(.vertical, 12)
+                            .background(wrombleRed.opacity(0.10)).cornerRadius(12)
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .navigationTitle("Menukort")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+        .refreshable { await load() }
+        .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
+        .sheet(item: $editing) { e in
+            MenuItemEditorView(session: session, edit: e, onDone: { msg in
+                editing = nil
+                if let m = msg { showToast(m) }
+                Task { await load() }
+            })
+        }
+        .alert("Ny kategori", isPresented: $showAddCategory) {
+            TextField("Navn", text: $newCatName)
+            Button("Annuller", role: .cancel) {}
+            Button("Opret") { saveCategory(name: newCatName) }
+        }
+    }
+
+    func categorySection(_ cat: MenuCategory) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(cat.name).font(.title3.bold())
+                Spacer()
+                Button(action: { deleteCategory(cat) }) {
+                    Image(systemName: "trash").font(.subheadline).foregroundColor(.secondary)
+                }
+            }
+            ForEach(cat.products) { item in
+                Button(action: {
+                    editing = MenuItemEdit(id: "\(item.id)", itemId: item.id, catId: cat.id,
+                                           headline: item.name, description: item.description ?? "",
+                                           price: String(format: "%.0f", item.price))
+                }) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.name).font(.subheadline.weight(.semibold)).foregroundColor(.primary)
+                            if let d = item.description, !d.isEmpty {
+                                Text(d).font(.caption).foregroundColor(.secondary).lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        Text(String(format: "%.0f kr", item.price)).font(.subheadline).foregroundColor(.secondary)
+                        Image(systemName: "chevron.right").font(.caption2).foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+                Divider()
+            }
+            Button(action: {
+                editing = MenuItemEdit(id: "new-\(cat.id)", itemId: 0, catId: cat.id, headline: "", description: "", price: "")
+            }) {
+                Label("Tilfoej ret", systemImage: "plus.circle.fill")
+                    .font(.subheadline.weight(.semibold)).foregroundColor(wrombleRed)
+            }
+            .padding(.top, 2)
+        }
+        .padding(16)
+        .background(Color(.secondarySystemBackground)).cornerRadius(16)
+    }
+
+    func load() async {
+        await MainActor.run { isLoading = true }
+        guard let url = URL(string: "\(baseURL)/api/menu.php?company_id=\(session.companyId)") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            struct Resp: Codable { let categories: [MenuCategory] }
+            let r = try JSONDecoder().decode(Resp.self, from: data)
+            await MainActor.run { categories = r.categories; isLoading = false }
+        } catch {
+            await MainActor.run { isLoading = false }
+        }
+    }
+
+    func saveCategory(name: String) {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty else { return }
+        postJSON("app-menu-category.php", ["company_id": session.companyId, "action": "save", "name": n]) { ok, err in
+            if ok { showToast("Kategori oprettet"); Task { await load() } } else { showToast(err ?? "Fejl") }
+        }
+    }
+
+    func deleteCategory(_ cat: MenuCategory) {
+        postJSON("app-menu-category.php", ["company_id": session.companyId, "action": "delete", "id": cat.id]) { ok, err in
+            if ok { showToast("Kategori slettet"); Task { await load() } } else { showToast(err ?? "Fejl") }
+        }
+    }
+
+    func showToast(_ msg: String) {
+        withAnimation { toast = msg }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { if toast == msg { withAnimation { toast = nil } } }
+    }
+}
+
+struct MenuItemEditorView: View {
+    let session: StaffSession
+    let edit: MenuItemEdit
+    var onDone: (String?) -> Void
+
+    @State private var headline: String
+    @State private var description: String
+    @State private var price: String
+    @State private var isSaving = false
+    @State private var errorMessage = ""
+
+    init(session: StaffSession, edit: MenuItemEdit, onDone: @escaping (String?) -> Void) {
+        self.session = session
+        self.edit = edit
+        self.onDone = onDone
+        _headline = State(initialValue: edit.headline)
+        _description = State(initialValue: edit.description)
+        _price = State(initialValue: edit.price)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(header: Text("Ret")) {
+                    TextField("Navn", text: $headline)
+                    TextField("Beskrivelse", text: $description, axis: .vertical).lineLimit(2...5)
+                    HStack {
+                        TextField("Pris", text: $price).keyboardType(.decimalPad)
+                        Text("kr").foregroundColor(.secondary)
+                    }
+                }
+                if !errorMessage.isEmpty {
+                    Text(errorMessage).foregroundColor(.red).font(.subheadline)
+                }
+                Section {
+                    Button(action: save) {
+                        HStack { Spacer(); if isSaving { ProgressView() } else { Text("Gem").font(.headline) }; Spacer() }
+                    }
+                    .disabled(headline.isEmpty || isSaving)
+                    .listRowBackground(wrombleRed.opacity(headline.isEmpty ? 0.4 : 1))
+                    .foregroundColor(.white)
+                }
+                if edit.itemId > 0 {
+                    Section {
+                        Button(role: .destructive, action: delete) {
+                            HStack { Spacer(); Text("Slet ret"); Spacer() }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(edit.itemId > 0 ? "Ret vare" : "Ny ret")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { onDone(nil) } } }
+        }
+    }
+
+    func save() {
+        isSaving = true; errorMessage = ""
+        var payload: [String: Any] = ["company_id": session.companyId, "action": "save",
+                                      "cat_id": edit.catId, "headline": headline,
+                                      "description": description, "price": Double(price.replacingOccurrences(of: ",", with: ".")) ?? 0]
+        if edit.itemId > 0 { payload["id"] = edit.itemId }
+        postJSON("app-menu-item.php", payload) { ok, err in
+            isSaving = false
+            if ok { onDone(edit.itemId > 0 ? "Ret opdateret" : "Ret tilfoejet") } else { errorMessage = err ?? "Kunne ikke gemme" }
+        }
+    }
+
+    func delete() {
+        isSaving = true
+        postJSON("app-menu-item.php", ["company_id": session.companyId, "action": "delete", "id": edit.itemId]) { ok, err in
+            isSaving = false
+            if ok { onDone("Ret slettet") } else { errorMessage = err ?? "Kunne ikke slette" }
+        }
+    }
+}
+
+struct CompanyHoursView: View {
+    let session: StaffSession
+    @State private var days: [CompanyHourDay] = []
+    @State private var isLoading = true
+    @State private var isSaving = false
+    @State private var toast: String?
+
+    var body: some View {
+        Form {
+            if isLoading {
+                HStack { Spacer(); ProgressView(); Spacer() }
+            } else {
+                Section {
+                    Text("Lad felterne staa tomme paa de dage I holder lukket. Format: 10:00")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                ForEach($days) { $day in
+                    Section(header: Text(day.weekday)) {
+                        timeRow(label: "Aabent", open: $day.store_open, close: $day.store_close)
+                        timeRow(label: "Levering", open: $day.bring_open, close: $day.bring_close)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Aabningstider")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: save) { if isSaving { ProgressView() } else { Text("Gem") } }.disabled(isSaving || isLoading)
+            }
+        }
+        .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
+    }
+
+    func timeRow(label: String, open: Binding<String>, close: Binding<String>) -> some View {
+        HStack {
+            Text(label).frame(width: 78, alignment: .leading).font(.subheadline)
+            TextField("--:--", text: open).multilineTextAlignment(.center)
+            Text("-").foregroundColor(.secondary)
+            TextField("--:--", text: close).multilineTextAlignment(.center)
+        }
+    }
+
+    func load() async {
+        guard let url = URL(string: "\(baseURL)/api/app-company-hours.php?company_id=\(session.companyId)") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            struct Resp: Codable { let days: [CompanyHourDay] }
+            let r = try JSONDecoder().decode(Resp.self, from: data)
+            await MainActor.run { days = r.days; isLoading = false }
+        } catch {
+            await MainActor.run { isLoading = false }
+        }
+    }
+
+    func save() {
+        isSaving = true
+        let payloadDays = days.map { ["weekday": $0.weekday, "store_open": $0.store_open, "store_close": $0.store_close,
+                                      "bring_open": $0.bring_open, "bring_close": $0.bring_close] }
+        postJSON("app-company-hours.php", ["company_id": session.companyId, "days": payloadDays]) { ok, err in
+            isSaving = false
+            showToast(ok ? "Tider gemt" : (err ?? "Fejl"))
+        }
+    }
+
+    func showToast(_ msg: String) {
+        withAnimation { toast = msg }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { if toast == msg { withAnimation { toast = nil } } }
+    }
+}
+
+struct CompanyProfileView: View {
+    let session: StaffSession
+    @State private var isLoading = true
+    @State private var isSaving = false
+    @State private var toast: String?
+
+    @State private var companyname = ""
+    @State private var adress = ""
+    @State private var zipcode = ""
+    @State private var city = ""
+    @State private var phone = ""
+    @State private var descriptionText = ""
+    @State private var website = ""
+    @State private var specialities = ""
+    @State private var isOpen = true
+    @State private var delivery = false
+    @State private var deliveryPrice = ""
+    @State private var deliveryTime = ""
+
+    var body: some View {
+        Form {
+            if isLoading {
+                HStack { Spacer(); ProgressView(); Spacer() }
+            } else {
+                Section(header: Text("Status")) {
+                    Toggle(isOn: $isOpen) {
+                        Label(isOpen ? "Aaben for bestillinger" : "Lukket", systemImage: isOpen ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    }.tint(.green)
+                }
+                Section(header: Text("Firma")) {
+                    TextField("Firmanavn", text: $companyname)
+                    TextField("Adresse", text: $adress)
+                    HStack {
+                        TextField("Postnr.", text: $zipcode).keyboardType(.numberPad).frame(width: 90)
+                        TextField("By", text: $city)
+                    }
+                    TextField("Telefon", text: $phone).keyboardType(.phonePad)
+                }
+                Section(header: Text("Om forretningen")) {
+                    TextField("Beskrivelse", text: $descriptionText, axis: .vertical).lineLimit(3...6)
+                    TextField("Specialiteter", text: $specialities)
+                    TextField("Hjemmeside", text: $website).keyboardType(.URL).autocapitalization(.none)
+                }
+                Section(header: Text("Levering")) {
+                    Toggle(isOn: $delivery) { Label("Tilbyd levering", systemImage: "bicycle") }.tint(wrombleRed)
+                    if delivery {
+                        HStack {
+                            TextField("Leveringspris", text: $deliveryPrice).keyboardType(.numberPad)
+                            Text("kr").foregroundColor(.secondary)
+                        }
+                        TextField("Leveringstid (fx 30-45 min)", text: $deliveryTime)
+                    }
+                }
+                if let t = toast {
+                    Section { Text(t).foregroundColor(.green).font(.subheadline) }
+                }
+                Section {
+                    Button(action: save) {
+                        HStack { Spacer(); if isSaving { ProgressView() } else { Text("Gem aendringer").font(.headline) }; Spacer() }
+                    }
+                    .disabled(isSaving)
+                    .listRowBackground(wrombleRed)
+                    .foregroundColor(.white)
+                }
+            }
+        }
+        .navigationTitle("Indstillinger")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    func load() async {
+        guard let url = URL(string: "\(baseURL)/api/app-company-profile.php?company_id=\(session.companyId)") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            struct Resp: Codable { let profile: CompanyProfile }
+            let r = try JSONDecoder().decode(Resp.self, from: data)
+            await MainActor.run {
+                let p = r.profile
+                companyname = p.companyname
+                adress = p.adress
+                zipcode = p.zipcode
+                city = p.city
+                phone = p.phone_mobile
+                descriptionText = p.description
+                website = p.website
+                specialities = p.specialities
+                isOpen = (p.shop_status != "Lukket")
+                delivery = (p.com_delivery == 1)
+                deliveryPrice = p.com_delivery_price > 0 ? String(p.com_delivery_price) : ""
+                deliveryTime = p.com_delivery_time
+                isLoading = false
+            }
+        } catch {
+            await MainActor.run { isLoading = false }
+        }
+    }
+
+    func save() {
+        isSaving = true
+        let payload: [String: Any] = [
+            "company_id": session.companyId,
+            "companyname": companyname,
+            "adress": adress,
+            "zipcode": zipcode,
+            "city": city,
+            "phone_mobile": phone,
+            "description": descriptionText,
+            "specialities": specialities,
+            "website": website,
+            "shop_status": isOpen ? "Åben" : "Lukket",
+            "com_delivery": delivery ? 1 : 0,
+            "com_delivery_price": Int(deliveryPrice) ?? 0,
+            "com_delivery_time": deliveryTime,
+        ]
+        postJSON("app-company-profile.php", payload) { ok, err in
+            isSaving = false
+            withAnimation { toast = ok ? "Gemt" : (err ?? "Fejl") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { withAnimation { toast = nil } }
         }
     }
 }
@@ -1605,6 +2093,96 @@ struct JobApplyView: View {
         postJSON("app-job-apply.php", ["job_id": job.id, "job_title": job.title, "name": name, "email": email, "phone": phone, "message": message]) { ok, err in
             isLoading = false
             if ok { withAnimation { sent = true } } else { errorMessage = err ?? "Noget gik galt" }
+        }
+    }
+}
+
+// MARK: - Kunde-profil (rediger egne oplysninger)
+
+struct CustomerProfileView: View {
+    let userId: Int
+    @Environment(\.dismiss) var dismiss
+    @State private var isLoading = true
+    @State private var isSaving = false
+    @State private var toast: String?
+    @State private var firstname = ""
+    @State private var lastname = ""
+    @State private var email = ""
+    @State private var adress = ""
+    @State private var zipcode = ""
+    @State private var city = ""
+    @State private var phone = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if isLoading {
+                    HStack { Spacer(); ProgressView(); Spacer() }
+                } else {
+                    Section(header: Text("Navn")) {
+                        TextField("Fornavn", text: $firstname)
+                        TextField("Efternavn", text: $lastname)
+                    }
+                    Section(header: Text("Leveringsadresse")) {
+                        TextField("Adresse", text: $adress)
+                        HStack {
+                            TextField("Postnr.", text: $zipcode).keyboardType(.numberPad).frame(width: 90)
+                            TextField("By", text: $city)
+                        }
+                    }
+                    Section(header: Text("Kontakt")) {
+                        TextField("Telefon", text: $phone).keyboardType(.phonePad)
+                        if !email.isEmpty {
+                            HStack { Text("Email").foregroundColor(.secondary); Spacer(); Text(email).foregroundColor(.secondary) }
+                        }
+                    }
+                    if let t = toast {
+                        Section { Text(t).foregroundColor(.green).font(.subheadline) }
+                    }
+                    Section {
+                        Button(action: save) {
+                            HStack { Spacer(); if isSaving { ProgressView() } else { Text("Gem").font(.headline) }; Spacer() }
+                        }
+                        .disabled(isSaving)
+                        .listRowBackground(wrombleRed)
+                        .foregroundColor(.white)
+                    }
+                }
+            }
+            .navigationTitle("Mine oplysninger")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Luk") { dismiss() } } }
+            .task { await load() }
+        }
+    }
+
+    func load() async {
+        guard let url = URL(string: "\(baseURL)/api/app-user-profile.php?user_id=\(userId)") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            struct Resp: Codable { let profile: CustomerProfileData }
+            let r = try JSONDecoder().decode(Resp.self, from: data)
+            await MainActor.run {
+                let p = r.profile
+                firstname = p.firstname; lastname = p.lastname; email = p.email
+                adress = p.adress; zipcode = p.zipcode; city = p.city; phone = p.phone
+                isLoading = false
+            }
+        } catch {
+            await MainActor.run { isLoading = false }
+        }
+    }
+
+    func save() {
+        isSaving = true
+        let payload: [String: Any] = [
+            "user_id": userId, "firstname": firstname, "lastname": lastname,
+            "adress": adress, "zipcode": zipcode, "city": city, "phone": phone,
+        ]
+        postJSON("app-user-profile.php", payload) { ok, err in
+            isSaving = false
+            withAnimation { toast = ok ? "Gemt" : (err ?? "Fejl") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { withAnimation { toast = nil } }
         }
     }
 }
@@ -4189,6 +4767,7 @@ struct ProfileView: View {
     @State private var showContactForm = false
     @State private var showPartner = false
     @State private var showJobs = false
+    @State private var showProfileEdit = false
     @State private var loggedInUser: UserProfile?
 
     var body: some View {
@@ -4217,6 +4796,17 @@ struct ProfileView: View {
                         }
                     }
                     .padding(.vertical, sizeClass == .regular ? 12 : 8)
+                }
+            }
+
+            if let user = loggedInUser, user.id > 0 {
+                Section(header: Text("Min konto")) {
+                    Button(action: {
+                        showProfileEdit = true
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    }) {
+                        Label("Mine oplysninger", systemImage: "person.crop.circle.fill").foregroundColor(.primary)
+                    }
                 }
             }
 
@@ -4323,7 +4913,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1 (14)").foregroundColor(.secondary)
+                    Text("1.1 (15)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
@@ -4383,6 +4973,9 @@ struct ProfileView: View {
         .sheet(isPresented: $showContactForm) { ContactFormView() }
         .sheet(isPresented: $showPartner) { PartnerFormView() }
         .sheet(isPresented: $showJobs) { JobsView() }
+        .sheet(isPresented: $showProfileEdit) {
+            if let user = loggedInUser, user.id > 0 { CustomerProfileView(userId: user.id) }
+        }
         .sheet(isPresented: $showLogin) {
             NavigationStack {
                 LoginView(onLogin: { user in
