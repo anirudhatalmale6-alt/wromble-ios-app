@@ -306,30 +306,116 @@ struct ContentView: View {
 struct SplashView: View {
     @Environment(\.horizontalSizeClass) var sizeClass
 
+    // Animations-tilstande
+    @State private var logoIn = false
+    @State private var titleIn = false
+    @State private var taglineIn = false
+    @State private var glowPulse = false
+    @State private var shimmer = false
+
+    // Roed brand-gradient til ordmaerket
+    private var wordmarkGradient: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color(red: 255/255, green: 74/255, blue: 74/255),
+                wrombleRed,
+                Color(red: 176/255, green: 8/255, blue: 20/255)
+            ],
+            startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                Color.white.edgesIgnoringSafeArea(.all)
-                VStack(spacing: sizeClass == .regular ? 24 : 16) {
-                    Image("SplashLogo")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: logoSize(for: geo.size), height: logoSize(for: geo.size))
+                // Bloed baggrund med et roedt skaer
+                LinearGradient(
+                    colors: [Color.white, Color(red: 1.0, green: 0.96, blue: 0.96)],
+                    startPoint: .top, endPoint: .bottom)
+                    .edgesIgnoringSafeArea(.all)
+
+                VStack(spacing: sizeClass == .regular ? 30 : 22) {
+                    // Logo med pulserende gloed bag
+                    ZStack {
+                        Circle()
+                            .fill(wrombleRed.opacity(0.18))
+                            .frame(width: logoSize(for: geo.size) * 1.35,
+                                   height: logoSize(for: geo.size) * 1.35)
+                            .blur(radius: 30)
+                            .scaleEffect(glowPulse ? 1.12 : 0.9)
+                            .opacity(glowPulse ? 0.9 : 0.5)
+
+                        Image("SplashLogo")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: logoSize(for: geo.size), height: logoSize(for: geo.size))
+                            .shadow(color: wrombleRed.opacity(0.35), radius: 20, y: 10)
+                    }
+                    .scaleEffect(logoIn ? 1 : 0.55)
+                    .opacity(logoIn ? 1 : 0)
+
+                    // "Wromble" - stort ordmaerke med gradient, skygge og shimmer
                     Text("Wromble")
-                        .font(.system(size: sizeClass == .regular ? 44 : 32, weight: .heavy))
-                        .foregroundColor(wrombleRed)
+                        .font(.system(size: titleSize(for: geo.size), weight: .black, design: .rounded))
+                        .kerning(1.5)
+                        .foregroundStyle(wordmarkGradient)
+                        .shadow(color: wrombleRed.opacity(0.35), radius: 12, y: 6)
+                        .overlay(
+                            // Glans der glider hen over teksten
+                            Text("Wromble")
+                                .font(.system(size: titleSize(for: geo.size), weight: .black, design: .rounded))
+                                .kerning(1.5)
+                                .foregroundStyle(
+                                    LinearGradient(
+                                        colors: [.clear, .white.opacity(0.85), .clear],
+                                        startPoint: .leading, endPoint: .trailing)
+                                )
+                                .mask(Text("Wromble")
+                                    .font(.system(size: titleSize(for: geo.size), weight: .black, design: .rounded))
+                                    .kerning(1.5))
+                                .offset(x: shimmer ? geo.size.width * 0.6 : -geo.size.width * 0.6)
+                        )
+                        .scaleEffect(titleIn ? 1 : 0.7)
+                        .opacity(titleIn ? 1 : 0)
+                        .offset(y: titleIn ? 0 : 18)
+
+                    // Intro-tekst / tagline - stoerre og med glid-ind
                     Text("Nemt & Enkelt")
-                        .font(.system(size: sizeClass == .regular ? 22 : 16, weight: .medium))
-                        .foregroundColor(.gray)
+                        .font(.system(size: taglineSize(for: geo.size), weight: .semibold, design: .rounded))
+                        .foregroundStyle(
+                            LinearGradient(colors: [wrombleRed.opacity(0.85), Color(red: 0.55, green: 0.05, blue: 0.10)],
+                                           startPoint: .leading, endPoint: .trailing))
+                        .tracking(3)
+                        .opacity(taglineIn ? 1 : 0)
+                        .offset(y: taglineIn ? 0 : 14)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .onAppear { runAnimations() }
         }
+    }
+
+    private func runAnimations() {
+        withAnimation(.spring(response: 0.7, dampingFraction: 0.55)) { logoIn = true }
+        withAnimation(.easeOut(duration: 0.6).delay(0.25)) { titleIn = true }
+        withAnimation(.easeOut(duration: 0.6).delay(0.5)) { taglineIn = true }
+        withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) { glowPulse = true }
+        // Shimmer starter efter titlen er inde og gentages
+        withAnimation(.linear(duration: 1.6).delay(0.9).repeatForever(autoreverses: false)) { shimmer = true }
     }
 
     func logoSize(for size: CGSize) -> CGFloat {
         let shortest = min(size.width, size.height)
-        return min(max(shortest * 0.3, 140), 320)
+        return min(max(shortest * 0.32, 150), 340)
+    }
+
+    func titleSize(for size: CGSize) -> CGFloat {
+        let base = min(size.width, size.height)
+        return min(max(base * 0.155, sizeClass == .regular ? 68 : 52), 120)
+    }
+
+    func taglineSize(for size: CGSize) -> CGFloat {
+        let base = min(size.width, size.height)
+        return min(max(base * 0.07, sizeClass == .regular ? 30 : 22), 44)
     }
 }
 
@@ -4929,7 +5015,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1 (16)").foregroundColor(.secondary)
+                    Text("1.1 (17)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
