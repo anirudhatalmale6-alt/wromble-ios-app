@@ -8,6 +8,7 @@ import AuthenticationServices
 import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
+import AVFoundation
 
 let wrombleRed = Color(red: 226/255, green: 15/255, blue: 30/255)
 let baseURL = "https://wromble.dk"
@@ -93,6 +94,60 @@ struct ChatMessage: Identifiable {
     let fileType: String?
     let fileName: String?
     let createdAt: String
+}
+
+// MARK: - Home Categories (Wolt-inspireret kategori-raekke)
+
+struct HomeCategory: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let emoji: String
+    let colors: [Color]
+
+    enum Kind: Hashable { case all, restaurants, shops, keyword(String) }
+    let kind: Kind
+
+    func matches(_ r: Restaurant) -> Bool {
+        switch kind {
+        case .all: return true
+        case .restaurants: return r.type == 2
+        case .shops: return r.type != 2
+        case .keyword(let k): return r.name.localizedCaseInsensitiveContains(k)
+        }
+    }
+
+    static let all = HomeCategory(id: "all", name: "Alle", emoji: "✨",
+                                  colors: [Color(red: 0.36, green: 0.36, blue: 0.42), Color(red: 0.20, green: 0.20, blue: 0.26)], kind: .all)
+
+    static let list: [HomeCategory] = [
+        all,
+        HomeCategory(id: "rest", name: "Restauranter", emoji: "🍽️",
+                     colors: [Color(red: 0.85, green: 0.16, blue: 0.20), Color(red: 0.55, green: 0.06, blue: 0.10)], kind: .restaurants),
+        HomeCategory(id: "shop", name: "Butikker", emoji: "🛍️",
+                     colors: [Color(red: 0.20, green: 0.45, blue: 0.85), Color(red: 0.10, green: 0.25, blue: 0.55)], kind: .shops),
+        HomeCategory(id: "pizza", name: "Pizza", emoji: "🍕",
+                     colors: [Color(red: 0.95, green: 0.55, blue: 0.15), Color(red: 0.75, green: 0.30, blue: 0.05)], kind: .keyword("pizza")),
+        HomeCategory(id: "burger", name: "Burger", emoji: "🍔",
+                     colors: [Color(red: 0.80, green: 0.55, blue: 0.25), Color(red: 0.50, green: 0.32, blue: 0.10)], kind: .keyword("burger")),
+        HomeCategory(id: "kebab", name: "Kebab", emoji: "🌯",
+                     colors: [Color(red: 0.55, green: 0.42, blue: 0.20), Color(red: 0.33, green: 0.24, blue: 0.08)], kind: .keyword("kebab")),
+        HomeCategory(id: "sushi", name: "Sushi", emoji: "🍣",
+                     colors: [Color(red: 0.15, green: 0.55, blue: 0.45), Color(red: 0.05, green: 0.33, blue: 0.27)], kind: .keyword("sushi")),
+        HomeCategory(id: "asia", name: "Asiatisk", emoji: "🍜",
+                     colors: [Color(red: 0.75, green: 0.25, blue: 0.35), Color(red: 0.45, green: 0.10, blue: 0.18)], kind: .keyword("asia")),
+        HomeCategory(id: "cafe", name: "Café", emoji: "☕",
+                     colors: [Color(red: 0.45, green: 0.32, blue: 0.55), Color(red: 0.28, green: 0.18, blue: 0.38)], kind: .keyword("cafe")),
+    ]
+}
+
+// MARK: - Order tracking model
+
+struct OrderStatus {
+    let stage: Int          // -1 afvist, 0 modtaget, 1 bekraeftet, 2 paa vej, 3 leveret
+    let label: String
+    let description: String
+    let companyName: String
+    let total: Double
 }
 
 // MARK: - Favorites Manager
@@ -671,16 +726,17 @@ struct HomeView: View {
     @Environment(\.horizontalSizeClass) var sizeClass
     @State private var restaurants: [Restaurant] = []
     @State private var searchText = ""
-    @State private var selectedFilter = "Alle"
+    @State private var selectedCategory: HomeCategory = .all
     @State private var isLoading = true
     @State private var showCart = false
-
-    let filters = ["Alle", "Restauranter", "Butikker"]
+    @State private var showScanner = false
+    @State private var showWromblePlus = false
+    @State private var scannedRestaurant: Restaurant?
+    @State private var scannedTable: Int?
+    @State private var scanError: String?
 
     var filteredRestaurants: [Restaurant] {
-        var list = restaurants
-        if selectedFilter == "Restauranter" { list = list.filter { $0.type == 2 } }
-        else if selectedFilter == "Butikker" { list = list.filter { $0.type != 2 } }
+        var list = restaurants.filter { selectedCategory.matches($0) }
         if !searchText.isEmpty {
             list = list.filter { $0.name.localizedCaseInsensitiveContains(searchText) || $0.address.localizedCaseInsensitiveContains(searchText) }
         }
@@ -706,17 +762,35 @@ struct HomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     // Header
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Wromble")
-                            .font(.system(size: sizeClass == .regular ? 38 : 28, weight: .heavy))
-                            .foregroundColor(wrombleRed)
-                        if let loc = locationManager.location {
-                            HStack(spacing: 4) {
-                                Image(systemName: "location.fill").font(.caption).foregroundColor(wrombleRed)
-                                Text("Naerliggende steder").font(.subheadline).foregroundColor(.secondary)
+                    HStack(alignment: .center) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Wromble")
+                                .font(.system(size: sizeClass == .regular ? 38 : 28, weight: .heavy))
+                                .foregroundColor(wrombleRed)
+                            if locationManager.location != nil {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "location.fill").font(.caption).foregroundColor(wrombleRed)
+                                    Text("Naerliggende steder").font(.subheadline).foregroundColor(.secondary)
+                                }
+                            } else {
+                                Text("Hvad har du lyst til i dag?").font(.subheadline).foregroundColor(.secondary)
                             }
-                        } else {
-                            Text("Hvad har du lyst til i dag?").font(.subheadline).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        // Scan bordets QR-kode
+                        Button(action: {
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            showScanner = true
+                        }) {
+                            VStack(spacing: 2) {
+                                Image(systemName: "qrcode.viewfinder")
+                                    .font(.system(size: sizeClass == .regular ? 30 : 26, weight: .semibold))
+                                Text("Scan").font(.system(size: 10, weight: .bold))
+                            }
+                            .foregroundColor(wrombleRed)
+                            .frame(width: 54, height: 54)
+                            .background(wrombleRed.opacity(0.10))
+                            .cornerRadius(14)
                         }
                     }
                     .padding(.horizontal, sizeClass == .regular ? 24 : 16)
@@ -734,26 +808,33 @@ struct HomeView: View {
                     .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                     .padding(.bottom, 16)
 
-                    // Filters
+                    // Kategorier (Wolt-inspireret raekke med billeder)
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 10) {
-                            ForEach(filters, id: \.self) { filter in
+                        HStack(alignment: .top, spacing: 14) {
+                            ForEach(HomeCategory.list) { cat in
                                 Button(action: {
                                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                    selectedFilter = filter
+                                    withAnimation(.easeOut(duration: 0.2)) { selectedCategory = cat }
                                 }) {
-                                    Text(filter)
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundColor(selectedFilter == filter ? .white : .primary)
-                                        .padding(.horizontal, 18).padding(.vertical, 10)
-                                        .background(selectedFilter == filter ? wrombleRed : Color(.secondarySystemBackground))
-                                        .cornerRadius(20)
+                                    CategoryTile(category: cat, isSelected: selectedCategory.id == cat.id)
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
                         .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                     }
                     .padding(.bottom, 20)
+
+                    // Wromble+ band (som Wolt+)
+                    Button(action: {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        showWromblePlus = true
+                    }) {
+                        WromblePlusBand()
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                    .padding(.bottom, 22)
 
                     // Favorites section
                     if !favoriteRestaurants.isEmpty && searchText.isEmpty {
@@ -837,6 +918,65 @@ struct HomeView: View {
             }
         }
         .sheet(isPresented: $showCart) { CartView() }
+        .fullScreenCover(isPresented: $showScanner) {
+            QRScannerView(onScan: handleScan, onCancel: { showScanner = false })
+                .ignoresSafeArea()
+        }
+        .sheet(isPresented: $showWromblePlus) { WromblePlusView() }
+        .sheet(item: $scannedRestaurant) { r in
+            NavigationStack {
+                RestaurantDetailView(restaurant: r, scannedTable: scannedTable)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Luk") { scannedRestaurant = nil }
+                        }
+                    }
+            }
+        }
+        .alert("QR-kode", isPresented: Binding(get: { scanError != nil }, set: { if !$0 { scanError = nil } })) {
+            Button("OK") { scanError = nil }
+        } message: { Text(scanError ?? "") }
+    }
+
+    func handleScan(_ code: String) {
+        showScanner = false
+        guard let comps = URLComponents(string: code) else { openScanFallback(code); return }
+        let host = comps.host ?? ""
+        guard host.contains("wromble.dk") else {
+            scanError = "Denne QR-kode er ikke en Wromble-kode."
+            return
+        }
+        // Find alias = foerste sti-segment der ikke er et kendt system-segment
+        let skip: Set<String> = ["", "api", "r", "category", "login", "rider", "company", "track", "wromble-plus", "show-table-menu.php"]
+        let segments = comps.path.split(separator: "/").map(String.init)
+        let alias = segments.first(where: { !skip.contains($0.lowercased()) })
+        // Bordnummer fra ?title=bordN eller ?bord=N
+        var table: Int? = nil
+        for it in comps.queryItems ?? [] {
+            if it.name == "title", let v = it.value?.lowercased(), v.hasPrefix("bord") {
+                table = Int(v.dropFirst(4))
+            } else if it.name == "bord", let v = it.value {
+                table = Int(v)
+            }
+        }
+        if let alias = alias,
+           let match = restaurants.first(where: { $0.alias.lowercased() == alias.lowercased() }) {
+            scannedTable = table
+            // Lille forsinkelse saa scanneren naar at lukke foer detaljen aabner
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                scannedRestaurant = match
+            }
+        } else {
+            openScanFallback(code)
+        }
+    }
+
+    func openScanFallback(_ code: String) {
+        if code.hasPrefix("http"), let u = URL(string: code) {
+            UIApplication.shared.open(u)
+        } else {
+            scanError = "QR-koden kunne ikke genkendes. Proev igen."
+        }
     }
 
     func loadRestaurants() async {
@@ -994,6 +1134,288 @@ struct RestaurantCard: View {
             Image(systemName: restaurant.type == 2 ? "fork.knife" : "bag.fill")
                 .font(.system(size: 36)).foregroundColor(.secondary.opacity(0.4))
         }
+    }
+}
+
+// MARK: - Category Tile (Wolt-stil)
+
+struct CategoryTile: View {
+    let category: HomeCategory
+    let isSelected: Bool
+
+    var body: some View {
+        VStack(spacing: 7) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(LinearGradient(colors: category.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                Text(category.emoji)
+                    .font(.system(size: 34))
+                    .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+            }
+            .frame(width: 72, height: 72)
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .stroke(wrombleRed, lineWidth: isSelected ? 3 : 0)
+            )
+            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+
+            Text(category.name)
+                .font(.caption2.weight(isSelected ? .bold : .semibold))
+                .foregroundColor(isSelected ? wrombleRed : .primary)
+                .lineLimit(1)
+                .frame(width: 78)
+        }
+    }
+}
+
+// MARK: - Wromble+ Band + Sheet
+
+struct WromblePlusBand: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 20)
+                .fill(LinearGradient(colors: [Color(red: 0.89, green: 0.06, blue: 0.12),
+                                              Color(red: 0.69, green: 0.05, blue: 0.09)],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle().fill(Color.white.opacity(0.18)).frame(width: 58, height: 58)
+                    Image(systemName: "star.circle.fill")
+                        .font(.system(size: 40, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text("Wromble+")
+                            .font(.title3.weight(.heavy)).foregroundColor(.white)
+                        Text("NYT")
+                            .font(.system(size: 10, weight: .heavy)).foregroundColor(wrombleRed)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.white).cornerRadius(5)
+                    }
+                    Text("Gratis levering – hver gang")
+                        .font(.subheadline.weight(.semibold)).foregroundColor(.white)
+                    Text("Kun 59,- pr. måned")
+                        .font(.caption).foregroundColor(.white.opacity(0.85))
+                }
+                Spacer()
+                Text("Kom i gang")
+                    .font(.caption.weight(.bold)).foregroundColor(wrombleRed)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(Color.white).cornerRadius(12)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 16)
+        }
+        .frame(height: 92)
+        .shadow(color: wrombleRed.opacity(0.25), radius: 8, y: 4)
+    }
+}
+
+struct WromblePlusView: View {
+    @Environment(\.dismiss) var dismiss
+    @Environment(\.horizontalSizeClass) var sizeClass
+    @Environment(\.openURL) var openURL
+
+    let benefits: [(String, String, String)] = [
+        ("bicycle", "Gratis levering", "Ingen leveringsgebyr på dine ordrer – hver gang du bestiller."),
+        ("tag.fill", "Faste lave priser", "Adgang til Wromble+ tilbud og priser hos dine favoritter."),
+        ("bolt.fill", "Nemt & enkelt", "Ingen binding. Opsig når som helst – helt uden bøvl."),
+    ]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 22) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 24)
+                            .fill(LinearGradient(colors: [Color(red: 0.89, green: 0.06, blue: 0.12),
+                                                          Color(red: 0.69, green: 0.05, blue: 0.09)],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+                        VStack(spacing: 8) {
+                            Image(systemName: "star.circle.fill")
+                                .font(.system(size: 56)).foregroundColor(.white)
+                            Text("Wromble+").font(.largeTitle.weight(.heavy)).foregroundColor(.white)
+                            Text("Gratis levering hver gang")
+                                .font(.headline).foregroundColor(.white.opacity(0.9))
+                        }
+                        .padding(.vertical, 30)
+                    }
+                    .padding(.horizontal, 20)
+
+                    VStack(spacing: 16) {
+                        ForEach(benefits, id: \.0) { b in
+                            HStack(alignment: .top, spacing: 14) {
+                                Image(systemName: b.0)
+                                    .font(.title2).foregroundColor(wrombleRed)
+                                    .frame(width: 40, height: 40)
+                                    .background(wrombleRed.opacity(0.10)).cornerRadius(10)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(b.1).font(.headline)
+                                    Text(b.2).font(.subheadline).foregroundColor(.secondary)
+                                }
+                                Spacer()
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 24)
+
+                    VStack(spacing: 4) {
+                        Text("Kun 59,- pr. måned").font(.title2.bold())
+                        Text("Ingen binding · opsig når som helst")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    .padding(.top, 4)
+
+                    Button(action: {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        if let u = URL(string: "\(baseURL)/wromble-plus/") { openURL(u) }
+                    }) {
+                        Text("Kom i gang")
+                            .font(.headline).foregroundColor(.white)
+                            .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
+                            .padding(.vertical, 16)
+                            .background(wrombleRed).cornerRadius(14)
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 30)
+                }
+                .padding(.top, 10)
+            }
+            .navigationTitle("Wromble+")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Luk") { dismiss() } }
+            }
+        }
+    }
+}
+
+// MARK: - QR Scanner (AVFoundation)
+
+struct QRScannerView: UIViewControllerRepresentable {
+    var onScan: (String) -> Void
+    var onCancel: () -> Void
+
+    func makeUIViewController(context: Context) -> QRScannerController {
+        let vc = QRScannerController()
+        vc.onScan = onScan
+        vc.onCancel = onCancel
+        return vc
+    }
+    func updateUIViewController(_ uiViewController: QRScannerController, context: Context) {}
+}
+
+class QRScannerController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
+    var onScan: ((String) -> Void)?
+    var onCancel: (() -> Void)?
+    private let session = AVCaptureSession()
+    private var preview: AVCaptureVideoPreviewLayer?
+    private var didScan = false
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        setupSession()
+        setupOverlay()
+    }
+
+    private func setupSession() {
+        guard let device = AVCaptureDevice.default(for: .video),
+              let input = try? AVCaptureDeviceInput(device: device),
+              session.canAddInput(input) else { return }
+        session.addInput(input)
+
+        let output = AVCaptureMetadataOutput()
+        if session.canAddOutput(output) {
+            session.addOutput(output)
+            output.setMetadataObjectsDelegate(self, queue: .main)
+            output.metadataObjectTypes = [.qr]
+        }
+
+        let pl = AVCaptureVideoPreviewLayer(session: session)
+        pl.videoGravity = .resizeAspectFill
+        pl.frame = view.layer.bounds
+        view.layer.addSublayer(pl)
+        preview = pl
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.session.startRunning()
+        }
+    }
+
+    private func setupOverlay() {
+        // Halvgennemsigtig maske med et klart scan-vindue i midten
+        let overlay = UIView(frame: view.bounds)
+        overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        overlay.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        let side: CGFloat = min(view.bounds.width, view.bounds.height) * 0.66
+        let box = CGRect(x: (view.bounds.width - side) / 2, y: (view.bounds.height - side) / 2, width: side, height: side)
+        let path = UIBezierPath(rect: overlay.bounds)
+        path.append(UIBezierPath(roundedRect: box, cornerRadius: 20).reversing())
+        let mask = CAShapeLayer(); mask.path = path.cgPath
+        overlay.layer.mask = mask
+        view.addSubview(overlay)
+
+        let frameView = UIView(frame: box)
+        frameView.layer.borderColor = UIColor.white.cgColor
+        frameView.layer.borderWidth = 3
+        frameView.layer.cornerRadius = 20
+        view.addSubview(frameView)
+
+        let label = UILabel()
+        label.text = "Scan bordets QR-kode"
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 18, weight: .semibold)
+        label.textAlignment = .center
+        label.frame = CGRect(x: 0, y: box.minY - 54, width: view.bounds.width, height: 30)
+        label.autoresizingMask = [.flexibleWidth, .flexibleBottomMargin]
+        view.addSubview(label)
+
+        let sub = UILabel()
+        sub.text = "Hold kameraet over QR-koden på bordet"
+        sub.textColor = UIColor.white.withAlphaComponent(0.85)
+        sub.font = .systemFont(ofSize: 14)
+        sub.textAlignment = .center
+        sub.frame = CGRect(x: 0, y: box.maxY + 18, width: view.bounds.width, height: 22)
+        sub.autoresizingMask = [.flexibleWidth, .flexibleTopMargin]
+        view.addSubview(sub)
+
+        let cancel = UIButton(type: .system)
+        cancel.setTitle("Annuller", for: .normal)
+        cancel.setTitleColor(.white, for: .normal)
+        cancel.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+        cancel.backgroundColor = UIColor.black.withAlphaComponent(0.4)
+        cancel.layer.cornerRadius = 12
+        cancel.frame = CGRect(x: (view.bounds.width - 140) / 2, y: view.bounds.height - 90, width: 140, height: 46)
+        cancel.autoresizingMask = [.flexibleLeftMargin, .flexibleRightMargin, .flexibleTopMargin]
+        cancel.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
+        view.addSubview(cancel)
+    }
+
+    @objc private func cancelTapped() {
+        session.stopRunning()
+        onCancel?()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        preview?.frame = view.layer.bounds
+    }
+
+    func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput metadataObjects: [AVMetadataObject], from connection: AVCaptureConnection) {
+        guard !didScan,
+              let obj = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+              obj.type == .qr,
+              let value = obj.stringValue else { return }
+        didScan = true
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        session.stopRunning()
+        onScan?(value)
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if session.isRunning { session.stopRunning() }
     }
 }
 
@@ -1197,6 +1619,7 @@ struct MapRestaurantCard: View {
 
 struct RestaurantDetailView: View {
     let restaurant: Restaurant
+    var scannedTable: Int? = nil
     @ObservedObject var cart: CartManager = .shared
     @ObservedObject var favorites: FavoritesManager = .shared
     @Environment(\.horizontalSizeClass) var sizeClass
@@ -1286,6 +1709,23 @@ struct RestaurantDetailView: View {
                     HStack(spacing: 4) {
                         Image(systemName: "mappin.circle.fill").foregroundColor(wrombleRed)
                         Text(restaurant.address).font(.subheadline).foregroundColor(.secondary)
+                    }
+
+                    if let table = scannedTable {
+                        HStack(spacing: 10) {
+                            Image(systemName: "qrcode")
+                                .font(.title3).foregroundColor(.white)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Bord \(table)").font(.subheadline.weight(.bold)).foregroundColor(.white)
+                                Text("Bestil her – så serverer vi ved dit bord")
+                                    .font(.caption).foregroundColor(.white.opacity(0.9))
+                            }
+                            Spacer()
+                        }
+                        .padding(12)
+                        .background(wrombleRed)
+                        .cornerRadius(12)
+                        .padding(.top, 6)
                     }
                 }
                 .padding(sizeClass == .regular ? 24 : 16)
@@ -1574,16 +2014,27 @@ struct CartView: View {
             Text("Din ordre er modtaget og vil blive behandlet hurtigst muligt")
                 .font(.body).foregroundColor(.secondary)
                 .multilineTextAlignment(.center).padding(.horizontal, 40)
-            Button(action: {
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                cart.clear()
-                dismiss()
-            }) {
-                Text("Faerdig")
-                    .font(.headline).foregroundColor(.white)
+            VStack(spacing: 12) {
+                NavigationLink(destination: OrderTrackingView(orderId: orderId, initialCompany: cart.restaurantName)) {
+                    HStack {
+                        Image(systemName: "map.fill")
+                        Text("Følg din ordre").font(.headline)
+                    }
+                    .foregroundColor(.white)
                     .frame(maxWidth: sizeClass == .regular ? 300 : .infinity)
                     .padding(.vertical, 16)
                     .background(wrombleRed).cornerRadius(14)
+                }
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    cart.clear()
+                    dismiss()
+                }) {
+                    Text("Faerdig")
+                        .font(.headline).foregroundColor(.secondary)
+                        .frame(maxWidth: sizeClass == .regular ? 300 : .infinity)
+                        .padding(.vertical, 14)
+                }
             }
             .padding(.horizontal, 30)
             Spacer()
@@ -1742,30 +2193,32 @@ struct OrdersView: View {
                 }
             } else {
                 List(orders) { order in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(order.companyName).font(.headline)
-                            Spacer()
-                            orderStatusBadge(order.status)
-                        }
-                        if !order.date.isEmpty {
-                            Text(order.date).font(.caption).foregroundColor(.secondary)
-                        }
-                        ForEach(order.items, id: \.name) { item in
+                    NavigationLink(destination: OrderTrackingView(orderId: order.id, initialCompany: order.companyName)) {
+                        VStack(alignment: .leading, spacing: 8) {
                             HStack {
-                                Text("\(item.quantity)x \(item.name)").font(.subheadline).foregroundColor(.secondary)
+                                Text(order.companyName).font(.headline)
                                 Spacer()
-                                Text(String(format: "%.2f kr", item.price * Double(item.quantity)))
-                                    .font(.subheadline).foregroundColor(.secondary)
+                                orderStatusBadge(order.status)
+                            }
+                            if !order.date.isEmpty {
+                                Text(order.date).font(.caption).foregroundColor(.secondary)
+                            }
+                            ForEach(order.items, id: \.name) { item in
+                                HStack {
+                                    Text("\(item.quantity)x \(item.name)").font(.subheadline).foregroundColor(.secondary)
+                                    Spacer()
+                                    Text(String(format: "%.2f kr", item.price * Double(item.quantity)))
+                                        .font(.subheadline).foregroundColor(.secondary)
+                                }
+                            }
+                            HStack {
+                                Spacer()
+                                Text(String(format: "Total: %.2f kr", order.total))
+                                    .font(.subheadline.weight(.bold)).foregroundColor(wrombleRed)
                             }
                         }
-                        HStack {
-                            Spacer()
-                            Text(String(format: "Total: %.2f kr", order.total))
-                                .font(.subheadline.weight(.bold)).foregroundColor(wrombleRed)
-                        }
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
                 }
                 .refreshable { loadOrders(userId: user.id) }
             }
@@ -1813,6 +2266,153 @@ struct OrdersView: View {
                 }
             }
         }.resume()
+    }
+}
+
+// MARK: - Order Tracking (live status-ring som Wolt)
+
+struct OrderTrackingView: View {
+    let orderId: Int
+    var initialCompany: String = ""
+    @Environment(\.dismiss) var dismiss
+    @State private var status: OrderStatus?
+    @State private var isLoading = true
+    @State private var pollTimer: Timer?
+
+    let steps = ["Modtaget", "Bekræftet", "På vej", "Leveret"]
+
+    var stage: Int { status?.stage ?? 0 }
+    var isRejected: Bool { stage < 0 }
+    var progress: Double {
+        if isRejected { return 0 }
+        return Double(max(0, stage)) / Double(steps.count - 1)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 26) {
+                // Status-ring
+                ZStack {
+                    Circle().stroke(Color(.systemGray5), lineWidth: 18)
+                    Circle()
+                        .trim(from: 0, to: isRejected ? 1 : max(0.02, progress))
+                        .stroke(isRejected ? Color.red : wrombleRed,
+                                style: StrokeStyle(lineWidth: 18, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .animation(.easeInOut(duration: 0.6), value: progress)
+                    VStack(spacing: 8) {
+                        Image(systemName: ringIcon)
+                            .font(.system(size: 42))
+                            .foregroundColor(isRejected ? .red : wrombleRed)
+                        Text(status?.label ?? "Henter…")
+                            .font(.title3.bold())
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(34)
+                }
+                .frame(width: 230, height: 230)
+                .padding(.top, 24)
+
+                Text(status?.description ?? "Vi henter status på din ordre")
+                    .font(.body).foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 30)
+
+                // Trin-indikator
+                if !isRejected {
+                    HStack(alignment: .top, spacing: 0) {
+                        ForEach(0..<steps.count, id: \.self) { i in
+                            VStack(spacing: 6) {
+                                ZStack {
+                                    Circle()
+                                        .fill(i <= stage ? wrombleRed : Color(.systemGray5))
+                                        .frame(width: 30, height: 30)
+                                    if i < stage {
+                                        Image(systemName: "checkmark").font(.caption.bold()).foregroundColor(.white)
+                                    } else if i == stage {
+                                        Circle().fill(.white).frame(width: 10, height: 10)
+                                    }
+                                }
+                                Text(steps[i]).font(.caption2)
+                                    .foregroundColor(i <= stage ? .primary : .secondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+
+                // Ordredetaljer
+                VStack(spacing: 0) {
+                    detailRow(icon: "number", title: "Ordrenummer", value: "#\(orderId)")
+                    Divider().padding(.leading, 50)
+                    detailRow(icon: "building.2.fill", title: "Sted", value: status?.companyName ?? initialCompany)
+                    if let t = status?.total, t > 0 {
+                        Divider().padding(.leading, 50)
+                        detailRow(icon: "creditcard", title: "Total", value: String(format: "%.2f kr", t))
+                    }
+                }
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(14)
+                .padding(.horizontal, 20)
+
+                if isLoading { ProgressView().padding(.top, 4) }
+                Spacer(minLength: 24)
+            }
+        }
+        .navigationTitle("Følg din ordre")
+        .navigationBarTitleDisplayMode(.inline)
+        .refreshable { await fetchStatus() }
+        .onAppear { startPolling() }
+        .onDisappear { pollTimer?.invalidate() }
+    }
+
+    var ringIcon: String {
+        if isRejected { return "xmark.circle.fill" }
+        switch stage {
+        case 3: return "checkmark.seal.fill"
+        case 2: return "bicycle"
+        case 1: return "fork.knife"
+        default: return "clock.badge.checkmark"
+        }
+    }
+
+    func detailRow(icon: String, title: String, value: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).foregroundColor(wrombleRed).frame(width: 26)
+            Text(title).foregroundColor(.secondary)
+            Spacer()
+            Text(value).font(.subheadline.weight(.semibold))
+        }
+        .padding(.horizontal, 16).padding(.vertical, 14)
+    }
+
+    func startPolling() {
+        Task { await fetchStatus() }
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { _ in
+            Task { await fetchStatus() }
+        }
+    }
+
+    func fetchStatus() async {
+        guard let url = URL(string: "\(baseURL)/api/order-status.php?order_id=\(orderId)") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                await MainActor.run { isLoading = false }; return
+            }
+            let s = OrderStatus(
+                stage: json["stage"] as? Int ?? 0,
+                label: json["label"] as? String ?? "",
+                description: json["description"] as? String ?? "",
+                companyName: json["company_name"] as? String ?? initialCompany,
+                total: (json["total"] as? NSNumber)?.doubleValue ?? 0)
+            await MainActor.run { status = s; isLoading = false }
+        } catch {
+            await MainActor.run { isLoading = false }
+        }
     }
 }
 
@@ -2336,7 +2936,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1 (8)").foregroundColor(.secondary)
+                    Text("1.1 (11)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
