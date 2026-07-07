@@ -41,6 +41,7 @@ struct Restaurant: Identifiable, Codable, Hashable {
     let lat: Double
     let lng: Double
     let image: String?
+    let logo: String?
     let categories: Int
     let items: Int
 
@@ -96,48 +97,35 @@ struct ChatMessage: Identifiable {
     let createdAt: String
 }
 
-// MARK: - Home Categories (Wolt-inspireret kategori-raekke)
+// MARK: - Produkt-kategorier (forside, hentes fra api/home-categories.php)
 
-struct HomeCategory: Identifiable, Hashable {
-    let id: String
+struct ProductCatCompany: Codable, Identifiable {
+    let id: Int
+    let product: String?
+}
+
+struct ProductCat: Codable, Identifiable {
+    let key: String
     let name: String
-    let emoji: String
-    let colors: [Color]
+    let image: String?
+    let companies: [ProductCatCompany]
+    var id: String { key }
+}
 
-    enum Kind: Hashable { case all, restaurants, shops, keyword(String) }
-    let kind: Kind
+// Fast visuel stil (emoji + gradient) pr. kategori-noegle - bruges som fallback
+// hvis kategorien ikke har et rigtigt produktbillede endnu.
+struct CatStyle { let emoji: String; let colors: [Color] }
 
-    func matches(_ r: Restaurant) -> Bool {
-        switch kind {
-        case .all: return true
-        case .restaurants: return r.type == 2
-        case .shops: return r.type != 2
-        case .keyword(let k): return r.name.localizedCaseInsensitiveContains(k)
-        }
+func catStyle(_ key: String) -> CatStyle {
+    switch key {
+    case "all":     return CatStyle(emoji: "✨", colors: [Color(red: 0.36, green: 0.36, blue: 0.42), Color(red: 0.20, green: 0.20, blue: 0.26)])
+    case "varme":   return CatStyle(emoji: "🍽️", colors: [Color(red: 0.85, green: 0.16, blue: 0.20), Color(red: 0.55, green: 0.06, blue: 0.10)])
+    case "kolde":   return CatStyle(emoji: "🥗", colors: [Color(red: 0.15, green: 0.55, blue: 0.45), Color(red: 0.05, green: 0.33, blue: 0.27)])
+    case "drikke":  return CatStyle(emoji: "🥤", colors: [Color(red: 0.20, green: 0.45, blue: 0.85), Color(red: 0.10, green: 0.25, blue: 0.55)])
+    case "slik":    return CatStyle(emoji: "🍰", colors: [Color(red: 0.80, green: 0.35, blue: 0.55), Color(red: 0.52, green: 0.15, blue: 0.33)])
+    case "dessert": return CatStyle(emoji: "🍨", colors: [Color(red: 0.55, green: 0.35, blue: 0.75), Color(red: 0.33, green: 0.18, blue: 0.50)])
+    default:        return CatStyle(emoji: "🍴", colors: [Color(red: 0.50, green: 0.30, blue: 0.20), Color(red: 0.30, green: 0.16, blue: 0.08)])
     }
-
-    static let all = HomeCategory(id: "all", name: "Alle", emoji: "✨",
-                                  colors: [Color(red: 0.36, green: 0.36, blue: 0.42), Color(red: 0.20, green: 0.20, blue: 0.26)], kind: .all)
-
-    static let list: [HomeCategory] = [
-        all,
-        HomeCategory(id: "rest", name: "Restauranter", emoji: "🍽️",
-                     colors: [Color(red: 0.85, green: 0.16, blue: 0.20), Color(red: 0.55, green: 0.06, blue: 0.10)], kind: .restaurants),
-        HomeCategory(id: "shop", name: "Butikker", emoji: "🛍️",
-                     colors: [Color(red: 0.20, green: 0.45, blue: 0.85), Color(red: 0.10, green: 0.25, blue: 0.55)], kind: .shops),
-        HomeCategory(id: "pizza", name: "Pizza", emoji: "🍕",
-                     colors: [Color(red: 0.95, green: 0.55, blue: 0.15), Color(red: 0.75, green: 0.30, blue: 0.05)], kind: .keyword("pizza")),
-        HomeCategory(id: "burger", name: "Burger", emoji: "🍔",
-                     colors: [Color(red: 0.80, green: 0.55, blue: 0.25), Color(red: 0.50, green: 0.32, blue: 0.10)], kind: .keyword("burger")),
-        HomeCategory(id: "kebab", name: "Kebab", emoji: "🌯",
-                     colors: [Color(red: 0.55, green: 0.42, blue: 0.20), Color(red: 0.33, green: 0.24, blue: 0.08)], kind: .keyword("kebab")),
-        HomeCategory(id: "sushi", name: "Sushi", emoji: "🍣",
-                     colors: [Color(red: 0.15, green: 0.55, blue: 0.45), Color(red: 0.05, green: 0.33, blue: 0.27)], kind: .keyword("sushi")),
-        HomeCategory(id: "asia", name: "Asiatisk", emoji: "🍜",
-                     colors: [Color(red: 0.75, green: 0.25, blue: 0.35), Color(red: 0.45, green: 0.10, blue: 0.18)], kind: .keyword("asia")),
-        HomeCategory(id: "cafe", name: "Café", emoji: "☕",
-                     colors: [Color(red: 0.45, green: 0.32, blue: 0.55), Color(red: 0.28, green: 0.18, blue: 0.38)], kind: .keyword("cafe")),
-    ]
 }
 
 // MARK: - Order tracking model
@@ -725,8 +713,9 @@ struct HomeView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.horizontalSizeClass) var sizeClass
     @State private var restaurants: [Restaurant] = []
+    @State private var productCats: [ProductCat] = []
     @State private var searchText = ""
-    @State private var selectedCategory: HomeCategory = .all
+    @State private var selectedCatKey: String = "all"
     @State private var isLoading = true
     @State private var showCart = false
     @State private var showScanner = false
@@ -735,8 +724,22 @@ struct HomeView: View {
     @State private var scannedTable: Int?
     @State private var scanError: String?
 
+    var selectedCat: ProductCat? { productCats.first(where: { $0.key == selectedCatKey }) }
+
+    // Firma-id -> eksempelprodukt for den valgte kategori (vises som chip paa kortet)
+    var productByCompany: [Int: String] {
+        guard let cat = selectedCat else { return [:] }
+        var m = [Int: String]()
+        for c in cat.companies { if let p = c.product, !p.isEmpty { m[c.id] = p } }
+        return m
+    }
+
     var filteredRestaurants: [Restaurant] {
-        var list = restaurants.filter { selectedCategory.matches($0) }
+        var list = restaurants
+        if let cat = selectedCat {
+            let ids = Set(cat.companies.map { $0.id })
+            list = list.filter { ids.contains($0.id) }
+        }
         if !searchText.isEmpty {
             list = list.filter { $0.name.localizedCaseInsensitiveContains(searchText) || $0.address.localizedCaseInsensitiveContains(searchText) }
         }
@@ -808,17 +811,13 @@ struct HomeView: View {
                     .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                     .padding(.bottom, 16)
 
-                    // Kategorier (Wolt-inspireret raekke med billeder)
+                    // Kategorier (Wolt-inspireret raekke med rigtige produktbilleder)
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(alignment: .top, spacing: 14) {
-                            ForEach(HomeCategory.list) { cat in
-                                Button(action: {
-                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                    withAnimation(.easeOut(duration: 0.2)) { selectedCategory = cat }
-                                }) {
-                                    CategoryTile(category: cat, isSelected: selectedCategory.id == cat.id)
-                                }
-                                .buttonStyle(.plain)
+                            // "Alle"-fliser foerst
+                            categoryTileButton(key: "all", name: "Alle", image: nil)
+                            ForEach(productCats) { cat in
+                                categoryTileButton(key: cat.key, name: cat.name, image: cat.image)
                             }
                         }
                         .padding(.horizontal, sizeClass == .regular ? 24 : 16)
@@ -878,7 +877,9 @@ struct HomeView: View {
                         LazyVGrid(columns: gridColumns, spacing: sizeClass == .regular ? 16 : 12) {
                             ForEach(filteredRestaurants) { restaurant in
                                 NavigationLink(destination: RestaurantDetailView(restaurant: restaurant)) {
-                                    RestaurantCard(restaurant: restaurant, userLocation: locationManager.location)
+                                    RestaurantCard(restaurant: restaurant,
+                                                   userLocation: locationManager.location,
+                                                   highlightProduct: productByCompany[restaurant.id])
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -890,8 +891,8 @@ struct HomeView: View {
                 }
             }
             .navigationBarHidden(true)
-            .refreshable { await loadRestaurants() }
-            .task { await loadRestaurants() }
+            .refreshable { await loadRestaurants(); await loadCategories() }
+            .task { await loadRestaurants(); await loadCategories() }
             .onAppear {
                 if appState.locationEnabled { locationManager.requestLocation() }
             }
@@ -979,6 +980,47 @@ struct HomeView: View {
         }
     }
 
+    // En kategori-flise (Wolt-stil): rigtigt produktbillede hvis muligt, ellers emoji+gradient
+    func categoryTileButton(key: String, name: String, image: String?) -> some View {
+        let isSel = selectedCatKey == key
+        return Button(action: {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            withAnimation(.easeOut(duration: 0.2)) { selectedCatKey = key }
+        }) {
+            let style = catStyle(key)
+            VStack(spacing: 7) {
+                ZStack {
+                    if let img = image, !img.isEmpty {
+                        AsyncImage(url: wrombleImageURL(img)) { phase in
+                            switch phase {
+                            case .success(let image): image.resizable().scaledToFill()
+                            default: LinearGradient(colors: style.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                            }
+                        }
+                    } else {
+                        ZStack {
+                            LinearGradient(colors: style.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                            Text(style.emoji).font(.system(size: 32))
+                                .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                        }
+                    }
+                }
+                .frame(width: 72, height: 72)
+                .clipped()
+                .cornerRadius(18)
+                .overlay(RoundedRectangle(cornerRadius: 18).stroke(wrombleRed, lineWidth: isSel ? 3 : 0))
+                .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+
+                Text(name)
+                    .font(.caption2.weight(isSel ? .bold : .semibold))
+                    .foregroundColor(isSel ? wrombleRed : .primary)
+                    .lineLimit(1).minimumScaleFactor(0.75)
+                    .frame(width: 82)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
     func loadRestaurants() async {
         guard let url = URL(string: "\(baseURL)/api/restaurants.php") else { return }
         do {
@@ -988,6 +1030,18 @@ struct HomeView: View {
             await MainActor.run { restaurants = response.restaurants; isLoading = false }
         } catch {
             await MainActor.run { isLoading = false }
+        }
+    }
+
+    func loadCategories() async {
+        guard let url = URL(string: "\(baseURL)/api/home-categories.php") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            struct Response: Codable { let categories: [ProductCat] }
+            let response = try JSONDecoder().decode(Response.self, from: data)
+            await MainActor.run { productCats = response.categories }
+        } catch {
+            // Kategorier er ekstra - fejler stille hvis endpoint ikke svarer
         }
     }
 }
@@ -1050,6 +1104,7 @@ struct FavoriteCard: View {
 struct RestaurantCard: View {
     let restaurant: Restaurant
     let userLocation: CLLocation?
+    var highlightProduct: String? = nil
     @ObservedObject var favorites: FavoritesManager = .shared
     @Environment(\.horizontalSizeClass) var sizeClass
 
@@ -1094,7 +1149,9 @@ struct RestaurantCard: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                HStack {
+                HStack(alignment: .center, spacing: 10) {
+                    // Firma-logo (firma-profil) ved siden af navnet
+                    logoAvatar
                     Text(restaurant.name)
                         .font(sizeClass == .regular ? .title3.weight(.bold) : .headline)
                         .foregroundColor(.primary).lineLimit(1)
@@ -1114,6 +1171,16 @@ struct RestaurantCard: View {
                     Text(restaurant.address).font(.caption).foregroundColor(.secondary).lineLimit(1)
                 }
 
+                if let hp = highlightProduct {
+                    HStack(spacing: 5) {
+                        Image(systemName: "checkmark.seal.fill").font(.caption2)
+                        Text(hp).font(.caption2.weight(.semibold)).lineLimit(1)
+                    }
+                    .foregroundColor(wrombleRed)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(wrombleRed.opacity(0.10)).cornerRadius(8)
+                }
+
                 HStack(spacing: 12) {
                     Label("\(restaurant.categories) kategorier", systemImage: "list.bullet")
                         .font(.caption2).foregroundColor(.secondary)
@@ -1128,42 +1195,36 @@ struct RestaurantCard: View {
         .shadow(color: .black.opacity(0.06), radius: 8, y: 4)
     }
 
+    @ViewBuilder var logoAvatar: some View {
+        if let logo = restaurant.logo, !logo.isEmpty {
+            AsyncImage(url: wrombleImageURL(logo)) { phase in
+                switch phase {
+                case .success(let image): image.resizable().scaledToFill()
+                default: logoPlaceholder
+                }
+            }
+            .frame(width: 44, height: 44).clipShape(Circle())
+            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+            .shadow(color: .black.opacity(0.10), radius: 2, y: 1)
+        } else {
+            logoPlaceholder
+        }
+    }
+
+    var logoPlaceholder: some View {
+        ZStack {
+            Circle().fill(wrombleRed.opacity(0.12))
+            Image(systemName: restaurant.type == 2 ? "fork.knife" : "bag.fill")
+                .font(.subheadline).foregroundColor(wrombleRed)
+        }
+        .frame(width: 44, height: 44)
+    }
+
     var restaurantPlaceholder: some View {
         ZStack {
             Color(.tertiarySystemBackground)
             Image(systemName: restaurant.type == 2 ? "fork.knife" : "bag.fill")
                 .font(.system(size: 36)).foregroundColor(.secondary.opacity(0.4))
-        }
-    }
-}
-
-// MARK: - Category Tile (Wolt-stil)
-
-struct CategoryTile: View {
-    let category: HomeCategory
-    let isSelected: Bool
-
-    var body: some View {
-        VStack(spacing: 7) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 18)
-                    .fill(LinearGradient(colors: category.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-                Text(category.emoji)
-                    .font(.system(size: 34))
-                    .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-            }
-            .frame(width: 72, height: 72)
-            .overlay(
-                RoundedRectangle(cornerRadius: 18)
-                    .stroke(wrombleRed, lineWidth: isSelected ? 3 : 0)
-            )
-            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
-
-            Text(category.name)
-                .font(.caption2.weight(isSelected ? .bold : .semibold))
-                .foregroundColor(isSelected ? wrombleRed : .primary)
-                .lineLimit(1)
-                .frame(width: 78)
         }
     }
 }
@@ -1177,17 +1238,18 @@ struct WromblePlusBand: View {
                 .fill(LinearGradient(colors: [Color(red: 0.89, green: 0.06, blue: 0.12),
                                               Color(red: 0.69, green: 0.05, blue: 0.09)],
                                      startPoint: .topLeading, endPoint: .bottomTrailing))
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 ZStack {
-                    Circle().fill(Color.white.opacity(0.18)).frame(width: 58, height: 58)
+                    Circle().fill(Color.white.opacity(0.18)).frame(width: 50, height: 50)
                     Image(systemName: "star.circle.fill")
-                        .font(.system(size: 40, weight: .semibold))
+                        .font(.system(size: 34, weight: .semibold))
                         .foregroundColor(.white)
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text("Wromble+")
                             .font(.title3.weight(.heavy)).foregroundColor(.white)
+                            .fixedSize()
                         Text("NYT")
                             .font(.system(size: 10, weight: .heavy)).foregroundColor(wrombleRed)
                             .padding(.horizontal, 6).padding(.vertical, 2)
@@ -1195,18 +1257,24 @@ struct WromblePlusBand: View {
                     }
                     Text("Gratis levering – hver gang")
                         .font(.subheadline.weight(.semibold)).foregroundColor(.white)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("Kun 59,- pr. måned")
-                        .font(.caption).foregroundColor(.white.opacity(0.85))
+                        .font(.caption).foregroundColor(.white.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer()
+                .layoutPriority(1)
+
+                Spacer(minLength: 6)
+
                 Text("Kom i gang")
                     .font(.caption.weight(.bold)).foregroundColor(wrombleRed)
-                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .padding(.horizontal, 13).padding(.vertical, 9)
                     .background(Color.white).cornerRadius(12)
+                    .fixedSize()
             }
             .padding(.horizontal, 16).padding(.vertical, 16)
         }
-        .frame(height: 92)
+        .fixedSize(horizontal: false, vertical: true)
         .shadow(color: wrombleRed.opacity(0.25), radius: 8, y: 4)
     }
 }
@@ -2936,7 +3004,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1 (11)").foregroundColor(.secondary)
+                    Text("1.1 (12)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
