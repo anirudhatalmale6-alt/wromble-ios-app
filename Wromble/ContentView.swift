@@ -104,11 +104,27 @@ struct ProductCatCompany: Codable, Identifiable {
     let product: String?
 }
 
+// Et konkret produkt i en kategori - linker til firmaet der har det
+struct CatProduct: Codable, Identifiable {
+    let id: Int
+    let name: String
+    let price: Double?
+    let image: String?
+    let companyId: Int
+    let companyName: String?
+    enum CodingKeys: String, CodingKey {
+        case id, name, price, image
+        case companyId = "company_id"
+        case companyName = "company_name"
+    }
+}
+
 struct ProductCat: Codable, Identifiable {
     let key: String
     let name: String
     let image: String?
     let companies: [ProductCatCompany]
+    let products: [CatProduct]?
     var id: String { key }
 }
 
@@ -497,9 +513,38 @@ struct OnboardingView: View {
 
 // MARK: - Login View
 
+enum LoginRole: String, CaseIterable {
+    case privat = "Privat"
+    case forretning = "Forretning"
+    case medarbejder = "Medarbejder"
+
+    var portalTitle: String {
+        switch self {
+        case .privat: return ""
+        case .forretning: return "Log ind som forretning"
+        case .medarbejder: return "Log ind som medarbejder"
+        }
+    }
+    var portalInfo: String {
+        switch self {
+        case .privat: return ""
+        case .forretning: return "Administrer dine ordrer, menukort og aabningstider i Wromble-erhvervsportalen."
+        case .medarbejder: return "Se og haandter indkomne ordrer for din butik i medarbejder-portalen."
+        }
+    }
+    var portalIcon: String {
+        switch self {
+        case .privat: return "person.fill"
+        case .forretning: return "building.2.fill"
+        case .medarbejder: return "person.badge.key.fill"
+        }
+    }
+}
+
 struct LoginView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.horizontalSizeClass) var sizeClass
+    @State private var role: LoginRole = .privat
     @State private var isLogin = true
     @State private var email = ""
     @State private var password = ""
@@ -519,8 +564,19 @@ struct LoginView: View {
                     .frame(width: sizeClass == .regular ? 100 : 70, height: sizeClass == .regular ? 100 : 70)
                 Text(isLogin ? "Log ind" : "Opret konto")
                     .font(sizeClass == .regular ? .largeTitle.bold() : .title.bold())
-                Text(isLogin ? "Log ind med din Wromble konto" : "Opret en gratis Wromble konto")
+                Text(role == .privat ? (isLogin ? "Log ind med din Wromble konto" : "Opret en gratis Wromble konto") : "Vaelg hvordan du vil logge ind")
                     .font(.subheadline).foregroundColor(.secondary)
+
+                // Rolle-valg (Privat / Forretning / Medarbejder) - som paa wromble.dk
+                Picker("", selection: $role) {
+                    ForEach(LoginRole.allCases, id: \.self) { r in Text(r.rawValue).tag(r) }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
+
+                if role != .privat {
+                    rolePortalView
+                } else {
 
                 Picker("", selection: $isLogin) {
                     Text("Log ind").tag(true)
@@ -589,10 +645,52 @@ struct LoginView: View {
                     Text("Fortsaet uden login").font(.subheadline).foregroundColor(.secondary)
                 }
                 .padding(.top, 4)
+
+                } // slut paa Privat-login
+
                 Spacer(minLength: 40)
             }
             .padding(.horizontal, sizeClass == .regular ? 60 : 24)
         }
+    }
+
+    // Forretning/Medarbejder: aabner Wromble-portalen (samme login som paa hjemmesiden)
+    var rolePortalView: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle().fill(wrombleRed.opacity(0.12)).frame(width: 80, height: 80)
+                Image(systemName: role.portalIcon)
+                    .font(.system(size: 36, weight: .semibold)).foregroundColor(wrombleRed)
+            }
+            .padding(.top, 8)
+
+            Text(role.portalTitle).font(.title3.bold()).multilineTextAlignment(.center)
+            Text(role.portalInfo)
+                .font(.subheadline).foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button(action: {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                if let url = URL(string: "\(baseURL)/login/") { UIApplication.shared.open(url) }
+            }) {
+                HStack {
+                    Text("Aabn portal").font(.headline)
+                    Image(systemName: "arrow.up.right")
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
+                .padding(.vertical, 16)
+                .background(wrombleRed).cornerRadius(14)
+            }
+
+            Text("Chauffoer- og medarbejder-skaerme kommer direkte i appen i en kommende opdatering.")
+                .font(.caption).foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
+        .padding(.top, 8)
     }
 
     func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) {
@@ -756,8 +854,31 @@ struct HomeView: View {
         restaurants.filter { favorites.isFavorite($0.id) }
     }
 
+    // Firma-id -> Restaurant (til at aabne firmaet fra et produkt-kort)
+    var restaurantById: [Int: Restaurant] {
+        Dictionary(restaurants.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    // Produkter i den valgte kategori (respekterer soegning) - vises som Wolt-agtige produkt-kort
+    var selectedProducts: [CatProduct] {
+        guard selectedCatKey != "all", let cat = selectedCat, let prods = cat.products else { return [] }
+        if searchText.isEmpty { return prods }
+        return prods.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            ($0.companyName?.localizedCaseInsensitiveContains(searchText) ?? false)
+        }
+    }
+
+    var showingProducts: Bool { selectedCatKey != "all" && !(selectedCat?.products?.isEmpty ?? true) }
+
     var gridColumns: [GridItem] {
         sizeClass == .regular ? [GridItem(.adaptive(minimum: 300), spacing: 16)] : [GridItem(.flexible())]
+    }
+
+    var productColumns: [GridItem] {
+        sizeClass == .regular
+            ? [GridItem(.adaptive(minimum: 180), spacing: 14)]
+            : [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
     }
 
     var body: some View {
@@ -835,6 +956,17 @@ struct HomeView: View {
                     .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                     .padding(.bottom, 22)
 
+                    // Reklame: scan bordets QR-kode (som paa wromble.dk)
+                    Button(action: {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        showScanner = true
+                    }) {
+                        ScanBordBanner()
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                    .padding(.bottom, 22)
+
                     // Favorites section
                     if !favoriteRestaurants.isEmpty && searchText.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
@@ -859,13 +991,50 @@ struct HomeView: View {
                         .padding(.bottom, 24)
                     }
 
-                    // Restaurant list
+                    // Restaurant-liste ELLER produkt-liste (naar en kategori er valgt)
                     if isLoading {
                         VStack(spacing: 16) {
                             ProgressView().scaleEffect(1.2)
                             Text("Henter restauranter...").font(.subheadline).foregroundColor(.secondary)
                         }
                         .frame(maxWidth: .infinity).padding(.top, 60)
+                    } else if showingProducts {
+                        // Overskrift for den valgte kategori
+                        HStack {
+                            Text(selectedCat?.name ?? "Produkter").font(.title3.bold())
+                            Spacer()
+                            Button(action: {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                withAnimation(.easeOut(duration: 0.2)) { selectedCatKey = "all" }
+                            }) {
+                                Text("Vis alle").font(.subheadline.weight(.semibold)).foregroundColor(wrombleRed)
+                            }
+                        }
+                        .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                        .padding(.bottom, 12)
+
+                        if selectedProducts.isEmpty {
+                            VStack(spacing: 12) {
+                                Image(systemName: "magnifyingglass").font(.system(size: 40)).foregroundColor(.secondary)
+                                Text("Ingen produkter").font(.headline)
+                                Text("Proev en anden kategori").font(.subheadline).foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity).padding(.top, 40)
+                        } else {
+                            LazyVGrid(columns: productColumns, spacing: 14) {
+                                ForEach(selectedProducts) { product in
+                                    if let r = restaurantById[product.companyId] {
+                                        NavigationLink(destination: RestaurantDetailView(restaurant: r)) {
+                                            ProductTileCard(product: product)
+                                        }
+                                        .buttonStyle(.plain)
+                                    } else {
+                                        ProductTileCard(product: product).opacity(0.6)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, sizeClass == .regular ? 24 : 16)
+                        }
                     } else if filteredRestaurants.isEmpty {
                         VStack(spacing: 12) {
                             Image(systemName: "magnifyingglass").font(.system(size: 40)).foregroundColor(.secondary)
@@ -1229,6 +1398,129 @@ struct RestaurantCard: View {
     }
 }
 
+// MARK: - Product Tile (kategori-produkt der linker til firmaet)
+
+struct ProductTileCard: View {
+    let product: CatProduct
+
+    var priceText: String {
+        guard let p = product.price, p > 0 else { return "" }
+        return String(format: "%.0f kr", p)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack {
+                if let img = product.image, !img.isEmpty {
+                    AsyncImage(url: wrombleImageURL(img)) { phase in
+                        switch phase {
+                        case .success(let image): image.resizable().scaledToFill()
+                        default: placeholder
+                        }
+                    }
+                    .frame(height: 120).frame(maxWidth: .infinity).clipped()
+                } else {
+                    placeholder.frame(height: 120).frame(maxWidth: .infinity)
+                }
+            }
+            .cornerRadius(14)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(product.name)
+                    .font(.subheadline.weight(.bold)).foregroundColor(.primary)
+                    .lineLimit(1)
+                if let cname = product.companyName, !cname.isEmpty {
+                    HStack(spacing: 3) {
+                        Image(systemName: "bag.circle.fill").font(.caption2).foregroundColor(wrombleRed)
+                        Text(cname).font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                    }
+                }
+                if !priceText.isEmpty {
+                    Text(priceText)
+                        .font(.caption.weight(.bold)).foregroundColor(wrombleRed)
+                        .padding(.top, 1)
+                }
+            }
+            .padding(.top, 8).padding(.horizontal, 2)
+        }
+        .padding(8)
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(16)
+        .shadow(color: .black.opacity(0.06), radius: 6, y: 3)
+    }
+
+    var placeholder: some View {
+        ZStack {
+            LinearGradient(colors: [wrombleRed.opacity(0.18), wrombleRed.opacity(0.08)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            Image(systemName: "fork.knife").font(.title).foregroundColor(wrombleRed.opacity(0.5))
+        }
+    }
+}
+
+// MARK: - Scan bordet reklame-banner (som paa wromble.dk)
+
+struct ScanBordBanner: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14).fill(wrombleRed.opacity(0.12))
+                        .frame(width: 56, height: 56)
+                    Image(systemName: "qrcode.viewfinder")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundColor(wrombleRed)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Scan bordets QR-kode")
+                        .font(.headline).foregroundColor(.primary)
+                    Text("Saet dig ved bordet, scan koden og bestil med det samme")
+                        .font(.caption).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                scanStep(number: "1", icon: "person.fill", text: "Saet dig")
+                stepArrow
+                scanStep(number: "2", icon: "qrcode.viewfinder", text: "Scan QR")
+                stepArrow
+                scanStep(number: "3", icon: "bag.fill", text: "Bestil")
+            }
+
+            HStack {
+                Text("Scan nu")
+                    .font(.subheadline.weight(.bold)).foregroundColor(.white)
+                Image(systemName: "arrow.right")
+                    .font(.caption.weight(.bold)).foregroundColor(.white)
+            }
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            .background(wrombleRed).cornerRadius(12)
+        }
+        .padding(16)
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(20)
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(wrombleRed.opacity(0.15), lineWidth: 1))
+    }
+
+    func scanStep(number: String, icon: String, text: String) -> some View {
+        VStack(spacing: 4) {
+            ZStack {
+                Circle().fill(wrombleRed.opacity(0.10)).frame(width: 40, height: 40)
+                Image(systemName: icon).font(.system(size: 16, weight: .semibold)).foregroundColor(wrombleRed)
+            }
+            Text(text).font(.caption2.weight(.medium)).foregroundColor(.secondary).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    var stepArrow: some View {
+        Image(systemName: "chevron.right")
+            .font(.caption2.weight(.bold)).foregroundColor(.secondary.opacity(0.5))
+    }
+}
+
 // MARK: - Wromble+ Band + Sheet
 
 struct WromblePlusBand: View {
@@ -1501,6 +1793,7 @@ struct MapTabView: View {
     )
     @State private var selectedRestaurant: Restaurant?
     @State private var highlightedId: Int?
+    @State private var pendingCenter = false
 
     var mappableRestaurants: [Restaurant] {
         restaurants.filter { $0.lat != 0 || $0.lng != 0 }
@@ -1551,6 +1844,22 @@ struct MapTabView: View {
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
                         .padding(.top, 12)
                 }
+            }
+            // Flydende "Min placering"-knap (som i Apple/Google Maps)
+            .overlay(alignment: .bottomTrailing) {
+                Button(action: centerOnUser) {
+                    ZStack {
+                        Circle().fill(Color(.systemBackground))
+                            .frame(width: 50, height: 50)
+                            .shadow(color: .black.opacity(0.2), radius: 5, y: 2)
+                        Image(systemName: "location.fill")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(wrombleRed)
+                    }
+                }
+                .accessibilityLabel("Min placering")
+                .padding(.trailing, 16)
+                .padding(.bottom, mappableRestaurants.isEmpty ? 30 : 130)
             }
 
             if !mappableRestaurants.isEmpty {
@@ -1611,6 +1920,14 @@ struct MapTabView: View {
         .onAppear {
             if appState.locationEnabled { locationManager.requestLocation() }
         }
+        .onChange(of: locationManager.location) { newLoc in
+            guard pendingCenter, let loc = newLoc else { return }
+            pendingCenter = false
+            withAnimation {
+                region.center = loc.coordinate
+                region.span = MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
+            }
+        }
     }
 
     func centerOnUser() {
@@ -1618,8 +1935,12 @@ struct MapTabView: View {
         if let loc = locationManager.location {
             withAnimation {
                 region.center = loc.coordinate
-                region.span = MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                region.span = MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
             }
+        } else {
+            // Ingen placering endnu - bed om tilladelse/opdatering og centrér naar den kommer
+            pendingCenter = true
+            locationManager.requestLocation()
         }
     }
 
@@ -1940,6 +2261,10 @@ struct CartView: View {
     @State private var showLoginSheet = false
     @State private var loggedInUser: UserProfile?
     @State private var errorMessage = ""
+    // Levering/afhentning + betaling (samme flow som wromble.dk)
+    @State private var isDelivery = false            // false = Afhentning, true = Levering
+    @State private var deliveryAddress = ""
+    @State private var paymentMethod = 2             // 1 = Online betaling, 2 = Kontanter
 
     var body: some View {
         NavigationStack {
@@ -1996,6 +2321,54 @@ struct CartView: View {
                             }
                             .buttonStyle(.borderless)
                         }
+                    }
+                }
+            }
+
+            // Levering eller afhentning (som paa wromble.dk)
+            Section(header: Text("Levering eller afhentning")) {
+                Picker("", selection: $isDelivery) {
+                    Text("Afhentning").tag(false)
+                    Text("Levering").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+
+                if isDelivery {
+                    HStack(spacing: 8) {
+                        Image(systemName: "mappin.and.ellipse").foregroundColor(wrombleRed)
+                        TextField("Leveringsadresse", text: $deliveryAddress)
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        Image(systemName: "bag.fill").foregroundColor(wrombleRed)
+                        Text("Du henter selv hos restauranten").font(.subheadline).foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            // Betalingsmetode (som paa wromble.dk)
+            Section(header: Text("Betalingsmetode")) {
+                Button(action: { paymentMethod = 2 }) {
+                    HStack {
+                        Image(systemName: "banknote").foregroundColor(wrombleRed)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Kontanter").foregroundColor(.primary)
+                            Text("Betal ved afhentning/levering").font(.caption2).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        if paymentMethod == 2 { Image(systemName: "checkmark.circle.fill").foregroundColor(wrombleRed) }
+                    }
+                }
+                Button(action: { paymentMethod = 1 }) {
+                    HStack {
+                        Image(systemName: "creditcard").foregroundColor(wrombleRed)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Online betaling").foregroundColor(.primary)
+                            Text("Kort · MobilePay · Apple Pay").font(.caption2).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        if paymentMethod == 1 { Image(systemName: "checkmark.circle.fill").foregroundColor(wrombleRed) }
                     }
                 }
             }
@@ -2076,10 +2449,10 @@ struct CartView: View {
             Spacer()
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 80)).foregroundColor(.green)
-            Text("Ordre bekraeftet!").font(.title.bold())
+            Text("Ordre modtaget!").font(.title.bold())
             Text("Ordrenummer: #\(orderId)")
                 .font(.title3).foregroundColor(.secondary)
-            Text("Din ordre er modtaget og vil blive behandlet hurtigst muligt")
+            Text("Din ordre er sendt til restauranten og afventer nu deres bekraeftelse. Du faar besked, saa snart den er accepteret.")
                 .font(.body).foregroundColor(.secondary)
                 .multilineTextAlignment(.center).padding(.horizontal, 40)
             VStack(spacing: 12) {
@@ -2119,6 +2492,10 @@ struct CartView: View {
     }
 
     func placeOrder() {
+        if isDelivery && deliveryAddress.trimmingCharacters(in: .whitespaces).isEmpty {
+            errorMessage = "Indtast en leveringsadresse, eller vaelg afhentning."
+            return
+        }
         guard let user = loggedInUser, user.id > 0 else {
             showLoginSheet = true
             return
@@ -2150,6 +2527,9 @@ struct CartView: View {
             "company_id": cart.restaurantId,
             "total": cart.total,
             "note": orderNote,
+            "delivery_check": isDelivery ? 1 : 0,
+            "payment_method": paymentMethod,
+            "delivery_address": deliveryAddress,
             "items": cart.items.map { ["id": $0.id, "quantity": $0.quantity] as [String: Any] }
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -2900,6 +3280,7 @@ struct ProfileView: View {
     @State private var showShareSheet = false
     @State private var showLogin = false
     @State private var showDeleteAccount = false
+    @State private var showSupportChat = false
     @State private var loggedInUser: UserProfile?
 
     var body: some View {
@@ -2983,6 +3364,39 @@ struct ProfileView: View {
                 }
             }
 
+            Section(header: Text("Wromble")) {
+                Button(action: {
+                    showSupportChat = true
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }) {
+                    Label("Kontakt os", systemImage: "bubble.left.and.bubble.right.fill").foregroundColor(.primary)
+                }
+
+                Link(destination: URL(string: "\(baseURL)/bliv-partner.php")!) {
+                    HStack {
+                        Label("Bliv partner", systemImage: "building.2.fill").foregroundColor(.primary)
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square").foregroundColor(.secondary).font(.caption)
+                    }
+                }
+
+                Link(destination: URL(string: "\(baseURL)/job/")!) {
+                    HStack {
+                        Label("Job hos Wromble", systemImage: "briefcase.fill").foregroundColor(.primary)
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square").foregroundColor(.secondary).font(.caption)
+                    }
+                }
+
+                Link(destination: URL(string: "\(baseURL)/contact/")!) {
+                    HStack {
+                        Label("Kontakt-side", systemImage: "envelope.fill").foregroundColor(.primary)
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square").foregroundColor(.secondary).font(.caption)
+                    }
+                }
+            }
+
             Section(header: Text("Del & Support")) {
                 Button(action: {
                     showShareSheet = true
@@ -3004,7 +3418,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1 (12)").foregroundColor(.secondary)
+                    Text("1.1 (13)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
@@ -3053,6 +3467,13 @@ struct ProfileView: View {
             ShareSheet(items: [
                 "Proev Wromble - bestil mad og specialvarer fra lokale butikker! Download her: https://apps.apple.com/dk/app/wromble/id6778496033"
             ])
+        }
+        .sheet(isPresented: $showSupportChat) {
+            NavigationStack {
+                ChatView()
+                    .navigationTitle("Kontakt os").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Luk") { showSupportChat = false } } }
+            }
         }
         .sheet(isPresented: $showLogin) {
             NavigationStack {
