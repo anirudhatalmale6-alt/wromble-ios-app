@@ -754,10 +754,26 @@ struct LoginView: View {
                         role: u["role"] as? String ?? "",
                         type: u["type"] as? String ?? role.apiMode)
                     password = ""
+                    // Registrer firmaets push-token, saa "Ny ordre"-notifikationer kan naa den native app
+                    if session.type == "company" && session.companyId > 0 {
+                        registerStaffPushToken(companyId: session.companyId)
+                    }
                     staffSession = session
                 }
             }
         }.resume()
+    }
+
+    func registerStaffPushToken(companyId: Int) {
+        let token = AppState.shared.deviceToken
+        guard !token.isEmpty else { return }
+        guard let url = URL(string: "\(baseURL)/api/register-push-token.php") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["company_id": companyId, "token": token, "platform": "ios"]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: request).resume()
     }
 
     func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) {
@@ -4913,7 +4929,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1 (15)").foregroundColor(.secondary)
+                    Text("1.1 (16)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
