@@ -2536,7 +2536,7 @@ struct HomeView: View {
                     } else {
                         LazyVGrid(columns: gridColumns, spacing: sizeClass == .regular ? 16 : 12) {
                             ForEach(filteredRestaurants) { restaurant in
-                                ZStack(alignment: .topTrailing) {
+                                ZStack(alignment: .topLeading) {
                                     NavigationLink(destination: RestaurantDetailView(restaurant: restaurant)) {
                                         RestaurantCard(restaurant: restaurant,
                                                        userLocation: locationManager.location,
@@ -2544,8 +2544,12 @@ struct HomeView: View {
                                                        showHeart: false)
                                     }
                                     .buttonStyle(.plain)
+                                    // Hjerte i nederste hoejre hjoerne AF BILLEDET, saa det ikke daekker firmatype-badgen
                                     FavoriteHeartButton(id: restaurant.id)
-                                        .padding(12)
+                                        .padding(10)
+                                        .frame(maxWidth: .infinity,
+                                               maxHeight: sizeClass == .regular ? 180 : 140,
+                                               alignment: .bottomTrailing)
                                 }
                             }
                         }
@@ -4599,6 +4603,7 @@ struct ChatView: View {
     @State private var showPhotoPicker = false
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var showFileImporter = false
+    @State private var showCall = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -4611,6 +4616,27 @@ struct ChatView: View {
         }
         .navigationTitle("Kundeservice")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if viewModel.isStarted && viewModel.status == "open" {
+                    Button(action: {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        showCall = true
+                    }) {
+                        Image(systemName: "video.fill").foregroundColor(wrombleRed)
+                    }
+                }
+            }
+        }
+        .fullScreenCover(isPresented: $showCall) {
+            let n = (nameInput.isEmpty ? "Kunde" : nameInput)
+                .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Kunde"
+            CallWebView(
+                url: URL(string: "\(baseURL)/app-call.php?cid=\(viewModel.conversationId)&name=\(n)&video=1")!,
+                onClose: { showCall = false }
+            )
+            .ignoresSafeArea()
+        }
         .onDisappear { viewModel.stopPolling() }
     }
 
@@ -4718,7 +4744,17 @@ struct ChatView: View {
     }
 
     var chatInputBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
+            // Synligt kamera-ikon: aabner kameraet direkte
+            Button(action: {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                showCamera = true
+            }) {
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 22))
+                    .foregroundColor(viewModel.isUploading ? .gray : wrombleRed)
+            }
+            .disabled(viewModel.isUploading)
             Button(action: { showAttachDialog = true }) {
                 Image(systemName: "paperclip")
                     .font(.system(size: 22))
@@ -4851,6 +4887,55 @@ struct CameraPicker: UIViewControllerRepresentable {
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
             parent.dismiss()
+        }
+    }
+}
+
+// MARK: - Video Call (WKWebView)
+// Aabner den samme WebRTC-video/lyd-loesning som paa hjemmesiden (app-call.php),
+// saa opkald i appen fungerer praecis som paa wromble.dk - med eller uden kamera.
+struct CallWebView: UIViewRepresentable {
+    let url: URL
+    var onClose: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onClose: onClose) }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+        config.userContentController.add(context.coordinator, name: "callEnded")
+
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.uiDelegate = context.coordinator
+        web.scrollView.isScrollEnabled = false
+        web.isOpaque = false
+        web.backgroundColor = .black
+        web.load(URLRequest(url: url))
+        return web
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+
+    class Coordinator: NSObject, WKUIDelegate, WKScriptMessageHandler {
+        let onClose: () -> Void
+        init(onClose: @escaping () -> Void) { self.onClose = onClose }
+
+        // Giv WebRTC adgang til kamera + mikrofon uden ekstra prompt inde i webview'en
+        func webView(_ webView: WKWebView,
+                     requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                     initiatedByFrame frame: WKFrameInfo,
+                     type: WKMediaCaptureType,
+                     decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+            decisionHandler(.grant)
+        }
+
+        // Websiden beder om at lukke opkaldsskaermen
+        func userContentController(_ userContentController: WKUserContentController,
+                                   didReceive message: WKScriptMessage) {
+            if message.name == "callEnded" {
+                DispatchQueue.main.async { self.onClose() }
+            }
         }
     }
 }
