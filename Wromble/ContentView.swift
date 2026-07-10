@@ -30,6 +30,28 @@ func wrombleImageURL(_ path: String?) -> URL? {
 private let wrombleImageCache: URLCache = URLCache(
     memoryCapacity: 32 * 1024 * 1024, diskCapacity: 256 * 1024 * 1024, diskPath: "wromble_img")
 
+// Limits how many image downloads hit wromble.dk at the same time. Shared hosting
+// (one.com) starts returning 429 when a whole menu screen fires 20-30 requests at
+// once, so we let only a handful through concurrently and queue the rest. This
+// spreads the load instead of bursting - the app-side version of "don't request
+// them all at the same time".
+private actor ImageDownloadGate {
+    static let shared = ImageDownloadGate()
+    private let maxConcurrent = 4
+    private var active = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if active < maxConcurrent { active += 1; return }
+        await withCheckedContinuation { waiters.append($0) }
+        active += 1
+    }
+    func release() {
+        active -= 1
+        if !waiters.isEmpty { waiters.removeFirst().resume() }
+    }
+}
+
 @MainActor
 final class WrombleImageLoader: ObservableObject {
     @Published var phase: AsyncImagePhase = .empty
@@ -40,10 +62,24 @@ final class WrombleImageLoader: ObservableObject {
         if loadedURL == url, case .success = phase { return }   // already have it
         loadedURL = url
         phase = .empty
-        Task { await fetch(url, attempt: 0) }
+        Task { await fetch(url) }
     }
 
-    private func fetch(_ url: URL, attempt: Int) async {
+    // One attempt against the network, gated so we don't burst the server.
+    private func attemptNetwork(_ req: URLRequest) async throws -> UIImage {
+        await ImageDownloadGate.shared.acquire()
+        defer { Task { await ImageDownloadGate.shared.release() } }
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw URLError(.badServerResponse)   // 429 / 5xx -> retry
+        }
+        guard let ui = UIImage(data: data) else { throw URLError(.cannotDecodeContentData) }
+        // cache manually (server may not send Cache-Control headers)
+        wrombleImageCache.storeCachedResponse(CachedURLResponse(response: resp, data: data), for: req)
+        return ui
+    }
+
+    private func fetch(_ url: URL) async {
         let req = URLRequest(url: url)
         // 1) serve from cache instantly if we have it
         if let cached = wrombleImageCache.cachedResponse(for: req),
@@ -51,22 +87,19 @@ final class WrombleImageLoader: ObservableObject {
             if loadedURL == url { phase = .success(Image(uiImage: ui)) }
             return
         }
-        // 2) fetch from network
-        do {
-            let (data, resp) = try await URLSession.shared.data(for: req)
-            if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                throw URLError(.badServerResponse)   // 429 / 5xx -> retry
-            }
-            guard let ui = UIImage(data: data) else { throw URLError(.cannotDecodeContentData) }
-            // cache manually (server may not send Cache-Control headers)
-            wrombleImageCache.storeCachedResponse(CachedURLResponse(response: resp, data: data), for: req)
-            if loadedURL == url { phase = .success(Image(uiImage: ui)) }
-        } catch {
-            if attempt < 3 {
+        // 2) fetch from network, retrying with backoff on failure (429/5xx/timeout)
+        for attempt in 0...3 {
+            do {
+                let ui = try await attemptNetwork(req)
+                if loadedURL == url { phase = .success(Image(uiImage: ui)) }
+                return
+            } catch {
+                guard attempt < 3 else {
+                    if loadedURL == url { phase = .failure(error) }
+                    return
+                }
                 try? await Task.sleep(nanoseconds: UInt64(attempt + 1) * 400_000_000) // 0.4/0.8/1.2s
-                if loadedURL == url { await fetch(url, attempt: attempt + 1) }
-            } else if loadedURL == url {
-                phase = .failure(error)
+                if loadedURL != url { return }   // URL changed while waiting - abandon
             }
         }
     }
@@ -1592,7 +1625,17 @@ struct CompanyMenuView: View {
             MenuItemEditorView(session: session, edit: e, onDone: { msg in
                 editing = nil
                 if let m = msg { showToast(m) }
-                Task { await load() }
+                let wasDelete = (msg == "Ret slettet")
+                let catId = e.catId
+                Task {
+                    await load()
+                    // Ryd op: hvis den sidste ret i en kategori slettes, fjern den tomme kategori
+                    if wasDelete, let cat = categories.first(where: { $0.id == catId }), cat.products.isEmpty {
+                        postJSON("app-menu-category.php", ["company_id": session.companyId, "action": "delete", "id": catId]) { ok, _ in
+                            if ok { Task { await load() } }
+                        }
+                    }
+                }
             })
         }
         .alert("Ny kategori", isPresented: $showAddCategory) {
@@ -3672,6 +3715,7 @@ struct RestaurantDetailView: View {
     @State private var showClearCartAlert = false
     @State private var pendingItem: MenuItem?
     @State private var hoursDays: [CompanyHourDay] = []
+    var visibleCategories: [MenuCategory] { categories.filter { !$0.products.isEmpty } }
 
     // Dagens aabningstid (butik) + aaben/lukket-status, synkroniseret med wromble.dk
     var todayHours: CompanyHourDay? {
@@ -3801,14 +3845,14 @@ struct RestaurantDetailView: View {
 
                 if isLoading {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
-                } else if categories.isEmpty {
+                } else if visibleCategories.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "menucard").font(.system(size: 40)).foregroundColor(.secondary)
                         Text("Ingen menukort endnu").font(.headline).foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity).padding(.top, 40)
                 } else {
-                    ForEach(categories) { category in
+                    ForEach(visibleCategories) { category in
                         VStack(alignment: .leading, spacing: 12) {
                             Text(category.name)
                                 .font(sizeClass == .regular ? .title2.bold() : .title3.bold())
@@ -3820,7 +3864,7 @@ struct RestaurantDetailView: View {
                                     .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                             }
                         }
-                        if category.id != categories.last?.id {
+                        if category.id != visibleCategories.last?.id {
                             Divider()
                                 .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                                 .padding(.vertical, 8)
@@ -5201,7 +5245,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1.1 (21)").foregroundColor(.secondary)
+                    Text("1.1.1 (22)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
