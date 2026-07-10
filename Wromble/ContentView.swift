@@ -9,6 +9,7 @@ import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
 import AVFoundation
+import AudioToolbox
 
 let wrombleRed = Color(red: 226/255, green: 15/255, blue: 30/255)
 let baseURL = "https://wromble.dk"
@@ -1131,6 +1132,46 @@ struct CompanyHourDay: Codable, Identifiable {
     var id: String { weekday }
 }
 
+// Aaben/lukket-beregning delt af kunde-menuen og kurven, saa der aldrig kan
+// bestilles fra en lukket butik. Tager hoejde for baade aabningstider og
+// forretningens manuelle "Lukket"-knap (shop_status).
+struct ShopOpenState {
+    let isOpen: Bool
+    let nextOpenText: String?   // fx "i dag kl. 17:00", "i morgen kl. 10:00", "Fredag kl. 11:00"
+    let manuallyClosed: Bool
+}
+
+func wrombleShopOpenState(_ days: [CompanyHourDay], shopStatus: String = "") -> ShopOpenState {
+    let names = ["Søndag","Mandag","Tirsdag","Onsdag","Torsdag","Fredag","Lørdag"]
+    let cal = Calendar.current
+    let todayIdx = max(0, min(6, cal.component(.weekday, from: Date()) - 1))
+    let df = DateFormatter(); df.dateFormat = "HH:mm"
+    let now = df.string(from: Date())
+    let today = days.first { $0.weekday == names[todayIdx] }
+    let manualClosed = (shopStatus == "Lukket")
+
+    var open = false
+    if !manualClosed, let t = today, !t.store_open.isEmpty, !t.store_close.isEmpty {
+        open = t.store_open <= now && now <= t.store_close
+    }
+
+    var next: String? = nil
+    if !manualClosed {
+        if let t = today, !t.store_open.isEmpty, now < t.store_open {
+            next = "i dag kl. \(t.store_open)"
+        } else {
+            for offset in 1...7 {
+                let idx = (todayIdx + offset) % 7
+                if let d = days.first(where: { $0.weekday == names[idx] }), !d.store_open.isEmpty {
+                    next = (offset == 1 ? "i morgen" : names[idx]) + " kl. \(d.store_open)"
+                    break
+                }
+            }
+        }
+    }
+    return ShopOpenState(isOpen: open, nextOpenText: next, manuallyClosed: manualClosed)
+}
+
 struct CustomerProfileData: Codable {
     var id: Int
     var firstname: String
@@ -1339,6 +1380,9 @@ struct CompanyOrdersView: View {
     @State private var actionId: Int?
     @State private var toast: String?
     @State private var tab = 0   // 0 = Aktive, 1 = Historik
+    @State private var refreshTimer: Timer?
+    @State private var knownOrderIds: Set<Int> = []
+    @State private var didInitialLoad = false
 
     var newOrders: [CompanyOrder] { orders.filter { $0.isNew } }
     var activeOrders: [CompanyOrder] { orders.filter { !$0.isNew } }
@@ -1376,7 +1420,24 @@ struct CompanyOrdersView: View {
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
         .task { await load() }
+        .onAppear { startAutoRefresh() }
+        .onDisappear { refreshTimer?.invalidate(); refreshTimer = nil }
         .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
+    }
+
+    // Henter ordrelisten hvert 15. sekund, saa nye bestillinger dukker op af sig
+    // selv - uden at forretningen skal gaa ind og ud af siden.
+    func startAutoRefresh() {
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { _ in
+            Task { await load(showSpinner: false) }
+        }
+    }
+
+    // Giver lyd + vibration naar en helt ny ordre er kommet ind mens siden er aaben.
+    func alertNewOrder() {
+        AudioServicesPlaySystemSound(1007)   // kort notifikationslyd
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
     func sectionHeader(_ title: String, count: Int) -> some View {
@@ -1476,15 +1537,26 @@ struct CompanyOrdersView: View {
         .background(Color(.tertiarySystemBackground)).cornerRadius(8)
     }
 
-    func load() async {
-        await MainActor.run { isLoading = true }
+    func load(showSpinner: Bool = true) async {
+        if showSpinner { await MainActor.run { isLoading = true } }
         let scope = tab == 1 ? "history" : "active"
         guard let url = URL(string: "\(baseURL)/api/app-company-orders.php?company_id=\(session.companyId)&scope=\(scope)") else { return }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             struct Resp: Codable { let orders: [CompanyOrder] }
             let r = try JSONDecoder().decode(Resp.self, from: data)
-            await MainActor.run { orders = r.orders; isLoading = false }
+            await MainActor.run {
+                // Opdag helt nye ordrer (kun paa Aktive-fanen) og giv lyd + vibration
+                if tab == 0 {
+                    let incomingNew = Set(r.orders.filter { $0.isNew }.map { $0.id })
+                    let fresh = incomingNew.subtracting(knownOrderIds)
+                    if didInitialLoad && !fresh.isEmpty { alertNewOrder() }
+                    knownOrderIds = incomingNew
+                }
+                orders = r.orders
+                isLoading = false
+                didInitialLoad = true
+            }
         } catch {
             await MainActor.run { isLoading = false }
         }
@@ -3704,6 +3776,8 @@ struct RestaurantDetailView: View {
     @State private var showClearCartAlert = false
     @State private var pendingItem: MenuItem?
     @State private var hoursDays: [CompanyHourDay] = []
+    @State private var shopStatus: String = ""
+    @State private var showClosedAlert = false
     var visibleCategories: [MenuCategory] { categories.filter { !$0.products.isEmpty } }
 
     // Dagens aabningstid (butik) + aaben/lukket-status, synkroniseret med wromble.dk
@@ -3713,11 +3787,12 @@ struct RestaurantDetailView: View {
         guard idx >= 1 && idx <= 7 else { return nil }
         return hoursDays.first { $0.weekday == names[idx - 1] }
     }
-    var isOpenNow: Bool {
-        guard let h = todayHours, !h.store_open.isEmpty, !h.store_close.isEmpty else { return false }
-        let df = DateFormatter(); df.dateFormat = "HH:mm"
-        let now = df.string(from: Date())
-        return h.store_open <= now && now <= h.store_close   // zero-padded HH:mm sorterer korrekt
+    var openState: ShopOpenState { wrombleShopOpenState(hoursDays, shopStatus: shopStatus) }
+    var isOpenNow: Bool { openState.isOpen }
+    var closedMessage: String {
+        if openState.manuallyClosed { return "Butikken er lukket lige nu. Du kan bestille, naar den aabner igen." }
+        if let n = openState.nextOpenText { return "Butikken er lukket lige nu – aabner \(n)." }
+        return "Butikken er lukket lige nu."
     }
 
     var body: some View {
@@ -3778,6 +3853,11 @@ struct RestaurantDetailView: View {
         } message: {
             Text("Du har varer fra \(cart.restaurantName) i kurven. Vil du rydde den og tilfoeje fra \(restaurant.name)?")
         }
+        .alert("Butikken er lukket", isPresented: $showClosedAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(closedMessage)
+        }
         .task { await loadHours(); await loadMenu() }
     }
 
@@ -3802,14 +3882,29 @@ struct RestaurantDetailView: View {
                         Text(restaurant.address).font(.subheadline).foregroundColor(.secondary)
                     }
 
-                    if let h = todayHours, !h.store_open.isEmpty, !h.store_close.isEmpty {
+                    // Aaben/lukket-status. Ved lukket vises hvornaar butikken aabner igen.
+                    VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 8) {
                             Circle().fill(isOpenNow ? Color.green : wrombleRed).frame(width: 9, height: 9)
                             Text(isOpenNow ? "Aabent nu" : "Lukket")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundColor(isOpenNow ? .green : wrombleRed)
-                            Text("· I dag \(h.store_open)–\(h.store_close)")
-                                .font(.subheadline).foregroundColor(.secondary)
+                            if isOpenNow, let h = todayHours, !h.store_open.isEmpty, !h.store_close.isEmpty {
+                                Text("· I dag \(h.store_open)–\(h.store_close)")
+                                    .font(.subheadline).foregroundColor(.secondary)
+                            }
+                        }
+                        if !isOpenNow {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "clock.badge.exclamationmark").foregroundColor(wrombleRed)
+                                Text(closedMessage)
+                                    .font(.subheadline).foregroundColor(.primary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(wrombleRed.opacity(0.08))
+                            .cornerRadius(10)
                         }
                     }
 
@@ -3867,6 +3962,12 @@ struct RestaurantDetailView: View {
     }
 
     func addToCart(_ item: MenuItem) {
+        // Bloker bestilling naar butikken er lukket (aabningstider eller manuel lukning)
+        guard isOpenNow else {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            showClosedAlert = true
+            return
+        }
         if cart.restaurantId != 0 && cart.restaurantId != restaurant.id && !cart.items.isEmpty {
             pendingItem = item
             showClearCartAlert = true
@@ -3901,9 +4002,9 @@ struct RestaurantDetailView: View {
         guard let url = URL(string: "\(baseURL)/api/app-company-hours.php?company_id=\(restaurant.id)") else { return }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            struct Resp: Codable { let days: [CompanyHourDay] }
+            struct Resp: Codable { let days: [CompanyHourDay]; let shop_status: String? }
             let r = try JSONDecoder().decode(Resp.self, from: data)
-            await MainActor.run { hoursDays = r.days }
+            await MainActor.run { hoursDays = r.days; shopStatus = r.shop_status ?? "" }
         } catch { }
     }
 }
@@ -3988,6 +4089,15 @@ struct CartView: View {
     @State private var isDelivery = false            // false = Afhentning, true = Levering
     @State private var deliveryAddress = ""
     @State private var paymentMethod = 2             // 1 = Online betaling, 2 = Kontanter
+    // Aabningstider for butikken i kurven - saa der ikke kan bestilles naar lukket
+    @State private var hoursDays: [CompanyHourDay] = []
+    @State private var shopStatus = ""
+    var cartOpenState: ShopOpenState { wrombleShopOpenState(hoursDays, shopStatus: shopStatus) }
+    var cartClosedMessage: String {
+        if cartOpenState.manuallyClosed { return "\(cart.restaurantName) er lukket lige nu. Du kan bestille, naar butikken aabner igen." }
+        if let n = cartOpenState.nextOpenText { return "\(cart.restaurantName) er lukket lige nu – aabner \(n)." }
+        return "\(cart.restaurantName) er lukket lige nu."
+    }
 
     var body: some View {
         NavigationStack {
@@ -4114,6 +4224,15 @@ struct CartView: View {
                 }
             }
 
+            if !cartOpenState.isOpen && !hoursDays.isEmpty {
+                Section {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "clock.badge.exclamationmark").foregroundColor(wrombleRed)
+                        Text(cartClosedMessage).font(.subheadline).foregroundColor(.primary)
+                    }
+                }
+            }
+
             Section {
                 Button(action: placeOrder) {
                     HStack {
@@ -4121,15 +4240,15 @@ struct CartView: View {
                         if isOrdering {
                             ProgressView().tint(.white)
                         } else {
-                            Text("Bestil nu").font(.headline)
+                            Text(cartOpenState.isOpen || hoursDays.isEmpty ? "Bestil nu" : "Butikken er lukket").font(.headline)
                         }
                         Spacer()
                     }
                     .foregroundColor(.white)
                     .padding(.vertical, 6)
                 }
-                .listRowBackground(wrombleRed)
-                .disabled(isOrdering)
+                .listRowBackground((cartOpenState.isOpen || hoursDays.isEmpty) ? wrombleRed : Color.gray)
+                .disabled(isOrdering || (!cartOpenState.isOpen && !hoursDays.isEmpty))
             }
         }
         .navigationTitle("Din kurv")
@@ -4165,6 +4284,7 @@ struct CartView: View {
             }
         }
         .onAppear { loadUser() }
+        .task { await loadCartHours() }
     }
 
     var orderConfirmation: some View {
@@ -4215,6 +4335,11 @@ struct CartView: View {
     }
 
     func placeOrder() {
+        // Sikkerhed: bloker ordre hvis butikken er lukket (aabningstider eller manuel lukning)
+        if !cartOpenState.isOpen && !hoursDays.isEmpty {
+            errorMessage = cartClosedMessage
+            return
+        }
         if isDelivery && deliveryAddress.trimmingCharacters(in: .whitespaces).isEmpty {
             errorMessage = "Indtast en leveringsadresse, eller vaelg afhentning."
             return
@@ -4224,6 +4349,17 @@ struct CartView: View {
             return
         }
         submitOrder(userId: user.id)
+    }
+
+    func loadCartHours() async {
+        guard cart.restaurantId > 0,
+              let url = URL(string: "\(baseURL)/api/app-company-hours.php?company_id=\(cart.restaurantId)") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            struct Resp: Codable { let days: [CompanyHourDay]; let shop_status: String? }
+            let r = try JSONDecoder().decode(Resp.self, from: data)
+            await MainActor.run { hoursDays = r.days; shopStatus = r.shop_status ?? "" }
+        } catch { }
     }
 
     func registerPushToken(userId: Int) {
@@ -5229,7 +5365,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1.1 (24)").foregroundColor(.secondary)
+                    Text("1.1.1 (25)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
