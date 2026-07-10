@@ -21,6 +21,71 @@ func wrombleImageURL(_ path: String?) -> URL? {
     return URL(string: "\(baseURL)/uploads/\(p)")
 }
 
+// MARK: - Cached, retrying image loader
+// Fixes intermittent blank product images: SwiftUI's AsyncImage never caches and
+// never retries, so when wromble.dk (shared hosting) briefly rate-limits a burst
+// of image requests (HTTP 429), that cell stays blank forever - even though the
+// exact same image loads fine in another row. This loader caches every image on
+// disk+memory and retries a few times with backoff before giving up.
+private let wrombleImageCache: URLCache = URLCache(
+    memoryCapacity: 32 * 1024 * 1024, diskCapacity: 256 * 1024 * 1024, diskPath: "wromble_img")
+
+@MainActor
+final class WrombleImageLoader: ObservableObject {
+    @Published var phase: AsyncImagePhase = .empty
+    private var loadedURL: URL?
+
+    func load(_ url: URL?) {
+        guard let url = url else { phase = .empty; return }
+        if loadedURL == url, case .success = phase { return }   // already have it
+        loadedURL = url
+        phase = .empty
+        Task { await fetch(url, attempt: 0) }
+    }
+
+    private func fetch(_ url: URL, attempt: Int) async {
+        let req = URLRequest(url: url)
+        // 1) serve from cache instantly if we have it
+        if let cached = wrombleImageCache.cachedResponse(for: req),
+           let ui = UIImage(data: cached.data) {
+            if loadedURL == url { phase = .success(Image(uiImage: ui)) }
+            return
+        }
+        // 2) fetch from network
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                throw URLError(.badServerResponse)   // 429 / 5xx -> retry
+            }
+            guard let ui = UIImage(data: data) else { throw URLError(.cannotDecodeContentData) }
+            // cache manually (server may not send Cache-Control headers)
+            wrombleImageCache.storeCachedResponse(CachedURLResponse(response: resp, data: data), for: req)
+            if loadedURL == url { phase = .success(Image(uiImage: ui)) }
+        } catch {
+            if attempt < 3 {
+                try? await Task.sleep(nanoseconds: UInt64(attempt + 1) * 400_000_000) // 0.4/0.8/1.2s
+                if loadedURL == url { await fetch(url, attempt: attempt + 1) }
+            } else if loadedURL == url {
+                phase = .failure(error)
+            }
+        }
+    }
+}
+
+// Drop-in replacement for AsyncImage(url:content:) - same closure signature,
+// so call sites only change the type name.
+struct CachedAsyncImage<Content: View>: View {
+    let url: URL?
+    @ViewBuilder var content: (AsyncImagePhase) -> Content
+    @StateObject private var loader = WrombleImageLoader()
+
+    var body: some View {
+        content(loader.phase)
+            .onAppear { loader.load(url) }
+            .onChange(of: url) { newURL in loader.load(newURL) }
+    }
+}
+
 // MARK: - Models
 
 struct UserProfile: Codable {
@@ -2681,7 +2746,7 @@ struct HomeView: View {
             VStack(spacing: 7) {
                 ZStack {
                     if let img = image, !img.isEmpty {
-                        AsyncImage(url: wrombleImageURL(img)) { phase in
+                        CachedAsyncImage(url: wrombleImageURL(img)) { phase in
                             switch phase {
                             case .success(let image): image.resizable().scaledToFill()
                             default: LinearGradient(colors: style.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -2753,7 +2818,7 @@ struct FavoriteCard: View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topTrailing) {
                 if let img = restaurant.image, !img.isEmpty {
-                    AsyncImage(url: wrombleImageURL(img)) { phase in
+                    CachedAsyncImage(url: wrombleImageURL(img)) { phase in
                         switch phase {
                         case .success(let image): image.resizable().scaledToFill()
                         default: placeholder
@@ -2830,7 +2895,7 @@ struct RestaurantCard: View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .topTrailing) {
                 if let img = restaurant.image, !img.isEmpty {
-                    AsyncImage(url: wrombleImageURL(img)) { phase in
+                    CachedAsyncImage(url: wrombleImageURL(img)) { phase in
                         switch phase {
                         case .success(let image): image.resizable().scaledToFill()
                         default: restaurantPlaceholder
@@ -2911,7 +2976,7 @@ struct RestaurantCard: View {
 
     @ViewBuilder var logoAvatar: some View {
         if let logo = restaurant.logo, !logo.isEmpty {
-            AsyncImage(url: wrombleImageURL(logo)) { phase in
+            CachedAsyncImage(url: wrombleImageURL(logo)) { phase in
                 switch phase {
                 case .success(let image): image.resizable().scaledToFill()
                 default: logoPlaceholder
@@ -2965,7 +3030,7 @@ struct ProductTileCard: View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack {
                 if let img = product.image, !img.isEmpty {
-                    AsyncImage(url: wrombleImageURL(img)) { phase in
+                    CachedAsyncImage(url: wrombleImageURL(img)) { phase in
                         switch phase {
                         case .success(let image): image.resizable().scaledToFill()
                         default: placeholder
@@ -3606,6 +3671,21 @@ struct RestaurantDetailView: View {
     @State private var showCart = false
     @State private var showClearCartAlert = false
     @State private var pendingItem: MenuItem?
+    @State private var hoursDays: [CompanyHourDay] = []
+
+    // Dagens aabningstid (butik) + aaben/lukket-status, synkroniseret med wromble.dk
+    var todayHours: CompanyHourDay? {
+        let idx = Calendar.current.component(.weekday, from: Date()) // 1=Soendag
+        let names = ["Søndag","Mandag","Tirsdag","Onsdag","Torsdag","Fredag","Lørdag"]
+        guard idx >= 1 && idx <= 7 else { return nil }
+        return hoursDays.first { $0.weekday == names[idx - 1] }
+    }
+    var isOpenNow: Bool {
+        guard let h = todayHours, !h.store_open.isEmpty, !h.store_close.isEmpty else { return false }
+        let df = DateFormatter(); df.dateFormat = "HH:mm"
+        let now = df.string(from: Date())
+        return h.store_open <= now && now <= h.store_close   // zero-padded HH:mm sorterer korrekt
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -3665,7 +3745,7 @@ struct RestaurantDetailView: View {
         } message: {
             Text("Du har varer fra \(cart.restaurantName) i kurven. Vil du rydde den og tilfoeje fra \(restaurant.name)?")
         }
-        .task { await loadMenu() }
+        .task { await loadHours(); await loadMenu() }
     }
 
     var menuContent: some View {
@@ -3687,6 +3767,17 @@ struct RestaurantDetailView: View {
                     HStack(spacing: 4) {
                         Image(systemName: "mappin.circle.fill").foregroundColor(wrombleRed)
                         Text(restaurant.address).font(.subheadline).foregroundColor(.secondary)
+                    }
+
+                    if let h = todayHours, !h.store_open.isEmpty, !h.store_close.isEmpty {
+                        HStack(spacing: 8) {
+                            Circle().fill(isOpenNow ? Color.green : wrombleRed).frame(width: 9, height: 9)
+                            Text(isOpenNow ? "Aabent nu" : "Lukket")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(isOpenNow ? .green : wrombleRed)
+                            Text("· I dag \(h.store_open)–\(h.store_close)")
+                                .font(.subheadline).foregroundColor(.secondary)
+                        }
                     }
 
                     if let table = scannedTable {
@@ -3772,6 +3863,16 @@ struct RestaurantDetailView: View {
             await MainActor.run { isLoading = false }
         }
     }
+
+    func loadHours() async {
+        guard let url = URL(string: "\(baseURL)/api/app-company-hours.php?company_id=\(restaurant.id)") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            struct Resp: Codable { let days: [CompanyHourDay] }
+            let r = try JSONDecoder().decode(Resp.self, from: data)
+            await MainActor.run { hoursDays = r.days }
+        } catch { }
+    }
 }
 
 // MARK: - Menu Item Row
@@ -3802,7 +3903,7 @@ struct MenuItemRow: View {
             Spacer()
 
             if let img = item.image, !img.isEmpty {
-                AsyncImage(url: wrombleImageURL(img)) { phase in
+                CachedAsyncImage(url: wrombleImageURL(img)) { phase in
                     switch phase {
                     case .success(let image): image.resizable().scaledToFill()
                     default: Color(.tertiarySystemBackground)
@@ -5100,7 +5201,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1 (17)").foregroundColor(.secondary)
+                    Text("1.1.1 (21)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
