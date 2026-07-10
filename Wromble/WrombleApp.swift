@@ -33,27 +33,51 @@ class AppState: ObservableObject {
     }
 }
 
+// Registrerer det aktuelle device-token for den identitet der er logget ind lige nu.
+// Baade privat bruger (user_id) og forretning (company_id) sendes i EEN raekke,
+// saa hverken kunde- eller firma-notifikationer overskriver hinanden. Kaldes fra
+// login OG naar APNs-token'et ankommer, saa registreringen aldrig gaar tabt paa timing.
+func wrombleSyncPushToken() {
+    let token = AppState.shared.deviceToken
+    guard !token.isEmpty else { return }
+    let uid = Int(UserDefaults.standard.string(forKey: "userId") ?? "") ?? 0
+    let cid = UserDefaults.standard.integer(forKey: "companyPushId")
+    guard uid > 0 || cid > 0 else { return }
+    guard let url = URL(string: "\(baseURL)/api/register-push-token.php") else { return }
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    let body: [String: Any] = ["user_id": uid, "company_id": cid, "token": token, "platform": "ios"]
+    request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+    URLSession.shared.dataTask(with: request).resume()
+}
+
+// Sikrer at vi faar (eller genhenter) et APNs-token, saa wrombleSyncPushToken kan koere.
+func wrombleEnsurePushRegistered() {
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
+        if granted {
+            DispatchQueue.main.async { UIApplication.shared.registerForRemoteNotifications() }
+        }
+    }
+}
+
 class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        // Har brugeren allerede givet tilladelse, saa genhent token ved hver opstart,
+        // saa en forretning der aabner appen altid faar sit token registreret paa ny.
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            if settings.authorizationStatus == .authorized {
+                DispatchQueue.main.async { UIApplication.shared.registerForRemoteNotifications() }
+            }
+        }
         return true
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let token = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
         AppState.shared.deviceToken = token
-        sendTokenToServer(token)
-    }
-
-    private func sendTokenToServer(_ token: String) {
-        guard let userId = UserDefaults.standard.string(forKey: "userId"), !userId.isEmpty else { return }
-        guard let url = URL(string: "\(baseURL)/api/register-push-token.php") else { return }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = ["user_id": Int(userId) ?? 0, "token": token, "platform": "ios"]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        URLSession.shared.dataTask(with: request).resume()
+        wrombleSyncPushToken()
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
