@@ -409,7 +409,7 @@ struct SplashView: View {
     @State private var titleIn = false
     @State private var taglineIn = false
     @State private var glowPulse = false
-    @State private var shimmer = false
+    @State private var dance = false
 
     // Roed brand-gradient til ordmaerket
     private var wordmarkGradient: LinearGradient {
@@ -451,30 +451,23 @@ struct SplashView: View {
                     .scaleEffect(logoIn ? 1 : 0.55)
                     .opacity(logoIn ? 1 : 0)
 
-                    // "Wromble" - stort ordmaerke med gradient, skygge og shimmer
-                    Text("Wromble")
-                        .font(.system(size: titleSize(for: geo.size), weight: .black, design: .rounded))
-                        .kerning(1.5)
-                        .foregroundStyle(wordmarkGradient)
-                        .shadow(color: wrombleRed.opacity(0.35), radius: 12, y: 6)
-                        .overlay(
-                            // Glans der glider hen over teksten
-                            Text("Wromble")
+                    // "Wromble" - dansende bogstaver med roed gradient, ingen skygge
+                    HStack(spacing: 1) {
+                        ForEach(Array("Wromble".enumerated()), id: \.offset) { idx, ch in
+                            Text(String(ch))
                                 .font(.system(size: titleSize(for: geo.size), weight: .black, design: .rounded))
-                                .kerning(1.5)
-                                .foregroundStyle(
-                                    LinearGradient(
-                                        colors: [.clear, .white.opacity(0.85), .clear],
-                                        startPoint: .leading, endPoint: .trailing)
-                                )
-                                .mask(Text("Wromble")
-                                    .font(.system(size: titleSize(for: geo.size), weight: .black, design: .rounded))
-                                    .kerning(1.5))
-                                .offset(x: shimmer ? geo.size.width * 0.6 : -geo.size.width * 0.6)
-                        )
-                        .scaleEffect(titleIn ? 1 : 0.7)
-                        .opacity(titleIn ? 1 : 0)
-                        .offset(y: titleIn ? 0 : 18)
+                                .foregroundStyle(wordmarkGradient)
+                                .offset(y: dance ? -titleSize(for: geo.size) * 0.15 : 0)
+                                .animation(
+                                    .easeInOut(duration: 0.55)
+                                        .repeatForever(autoreverses: true)
+                                        .delay(Double(idx) * 0.09),
+                                    value: dance)
+                        }
+                    }
+                    .scaleEffect(titleIn ? 1 : 0.7)
+                    .opacity(titleIn ? 1 : 0)
+                    .offset(y: titleIn ? 0 : 18)
 
                     // Intro-tekst / tagline - stoerre og med glid-ind
                     Text("Nemt & Enkelt")
@@ -497,8 +490,8 @@ struct SplashView: View {
         withAnimation(.easeOut(duration: 0.6).delay(0.25)) { titleIn = true }
         withAnimation(.easeOut(duration: 0.6).delay(0.5)) { taglineIn = true }
         withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) { glowPulse = true }
-        // Shimmer starter efter titlen er inde og gentages
-        withAnimation(.linear(duration: 1.6).delay(0.9).repeatForever(autoreverses: false)) { shimmer = true }
+        // Bogstaverne begynder at "danse" naar titlen er kommet ind
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { dance = true }
     }
 
     func logoSize(for size: CGSize) -> CGFloat {
@@ -5245,7 +5238,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1.1 (22)").foregroundColor(.secondary)
+                    Text("1.1.1 (23)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
