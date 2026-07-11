@@ -1429,7 +1429,7 @@ struct CompanyOrdersView: View {
     // selv - uden at forretningen skal gaa ind og ud af siden.
     func startAutoRefresh() {
         refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
             Task { await load(showSpinner: false) }
         }
     }
@@ -5365,7 +5365,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1.1 (25)").foregroundColor(.secondary)
+                    Text("1.1.1 (26)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
