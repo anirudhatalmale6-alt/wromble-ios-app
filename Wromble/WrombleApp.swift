@@ -42,12 +42,13 @@ func wrombleSyncPushToken() {
     guard !token.isEmpty else { return }
     let uid = Int(UserDefaults.standard.string(forKey: "userId") ?? "") ?? 0
     let cid = UserDefaults.standard.integer(forKey: "companyPushId")
-    guard uid > 0 || cid > 0 else { return }
+    let rid = UserDefaults.standard.integer(forKey: "riderPushId")
+    guard uid > 0 || cid > 0 || rid > 0 else { return }
     guard let url = URL(string: "\(baseURL)/api/register-push-token.php") else { return }
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    let body: [String: Any] = ["user_id": uid, "company_id": cid, "token": token, "platform": "ios"]
+    let body: [String: Any] = ["user_id": uid, "company_id": cid, "rider_id": rid, "token": token, "platform": "ios"]
     request.httpBody = try? JSONSerialization.data(withJSONObject: body)
     URLSession.shared.dataTask(with: request).resume()
 }

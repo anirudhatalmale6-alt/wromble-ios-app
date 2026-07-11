@@ -932,9 +932,12 @@ struct LoginView: View {
                         role: u["role"] as? String ?? "",
                         type: u["type"] as? String ?? role.apiMode)
                     password = ""
-                    // Registrer firmaets push-token, saa "Ny ordre"-notifikationer kan naa den native app
+                    // Registrer push-token, saa notifikationer kan naa den native app.
+                    // Forretning: "Ny ordre". Chauffoer: "Ny levering".
                     if session.type == "company" && session.companyId > 0 {
                         registerStaffPushToken(companyId: session.companyId)
+                    } else if session.type == "rider" && session.id > 0 {
+                        registerRiderPushToken(riderId: session.id, companyId: session.companyId)
                     }
                     staffSession = session
                 }
@@ -946,8 +949,17 @@ struct LoginView: View {
         // Husk hvilken forretning der er logget ind, saa token'et kan registreres
         // korrekt - baade nu og naar APNs-token'et ankommer (didRegisterForRemote).
         UserDefaults.standard.set(companyId, forKey: "companyPushId")
+        UserDefaults.standard.set(0, forKey: "riderPushId")
         wrombleEnsurePushRegistered()   // beder om tilladelse + genhenter token om noedvendigt
         wrombleSyncPushToken()          // registrerer med det samme hvis token allerede findes
+    }
+
+    func registerRiderPushToken(riderId: Int, companyId: Int) {
+        // Husk hvilken chauffoer der er logget ind, saa "Ny levering"-push kan naa den.
+        UserDefaults.standard.set(riderId, forKey: "riderPushId")
+        UserDefaults.standard.set(companyId, forKey: "companyPushId")
+        wrombleEnsurePushRegistered()
+        wrombleSyncPushToken()
     }
 
     func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) {
@@ -1237,6 +1249,9 @@ struct DriverDashboardView: View {
     @State private var isLoading = true
     @State private var actionId: Int?
     @State private var toast: String?
+    @State private var refreshTimer: Timer?
+    @State private var knownOrderIds: Set<Int> = []
+    @State private var didInitialLoad = false
 
     var body: some View {
         ScrollView {
@@ -1256,7 +1271,23 @@ struct DriverDashboardView: View {
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
         .task { await load() }
+        .onAppear { startAutoRefresh() }
+        .onDisappear { refreshTimer?.invalidate(); refreshTimer = nil }
         .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
+    }
+
+    // Henter leverance-listen hvert 5. sekund, saa nye leverancer dukker op af sig selv.
+    func startAutoRefresh() {
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
+            Task { await load(showSpinner: false) }
+        }
+    }
+
+    // Lyd + vibration naar en ny leverance er kommet ind mens siden er aaben.
+    func alertNewOrder() {
+        AudioServicesPlaySystemSound(1007)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
     var headerCard: some View {
@@ -1333,13 +1364,21 @@ struct DriverDashboardView: View {
         if let url = URL(string: "http://maps.apple.com/?daddr=\(coord)") { UIApplication.shared.open(url) }
     }
 
-    func load() async {
+    func load(showSpinner: Bool = true) async {
         guard let url = URL(string: "\(baseURL)/api/app-driver-orders.php?rider_id=\(session.id)&company_id=\(session.companyId)") else { return }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             struct Resp: Codable { let orders: [DriverOrder] }
             let r = try JSONDecoder().decode(Resp.self, from: data)
-            await MainActor.run { orders = r.orders; isLoading = false }
+            await MainActor.run {
+                let incoming = Set(r.orders.map { $0.id })
+                let fresh = incoming.subtracting(knownOrderIds)
+                if didInitialLoad && !fresh.isEmpty { alertNewOrder() }
+                knownOrderIds = incoming
+                didInitialLoad = true
+                orders = r.orders
+                isLoading = false
+            }
         } catch {
             await MainActor.run { isLoading = false }
         }
@@ -5365,7 +5404,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1.1 (26)").foregroundColor(.secondary)
+                    Text("1.1.1 (27)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
