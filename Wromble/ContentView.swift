@@ -251,6 +251,12 @@ struct OrderStatus {
     let description: String
     let companyName: String
     let total: Double
+    var isDelivery: Bool = false
+    var companyLat: Double = 0
+    var companyLng: Double = 0
+    var companyAddress: String = ""
+    var customerLat: Double = 0
+    var customerLng: Double = 0
 }
 
 // MARK: - Favorites Manager
@@ -351,10 +357,29 @@ struct ContentView: View {
             // Bed om notifikations-tilladelse med det samme ved opstart, saa "Tillad"
             // vises tidligt (iOS kraever brugerens ja - kan ikke saettes til paa forhaand).
             wrombleEnsurePushRegistered()
+            // Bed ogsaa om placering ved opstart, saa iOS spoerger tidligt. Toggles i
+            // Profil synkroniseres automatisk med systemets faktiske svar (se onChange).
+            locationManager.requestLocation()
+            syncLocationPreference(locationManager.authorizationStatus)
             if !appState.biometricEnabled { appState.isAuthenticated = true }
         }
         .onChange(of: networkMonitor.isConnected) { newValue in
             appState.networkAvailable = newValue
+        }
+        // Naar brugeren giver (eller fjerner) placeringstilladelse i systemet - fx paa
+        // forsiden - opdateres "Brug placering" i Profil automatisk, saa den altid
+        // afspejler den rigtige tilstand.
+        .onChange(of: locationManager.authorizationStatus) { status in
+            syncLocationPreference(status)
+        }
+    }
+
+    // Holder "Brug placering"-toggle i Profil i sync med systemets faktiske tilladelse.
+    func syncLocationPreference(_ status: CLAuthorizationStatus) {
+        let granted = (status == .authorizedWhenInUse || status == .authorizedAlways)
+        if appState.locationEnabled != granted {
+            appState.locationEnabled = granted
+            appState.save()
         }
     }
 
@@ -687,7 +712,12 @@ struct OnboardingView: View {
                 }
             }
         }
+        // Bed ogsaa om placering ved afslutning af onboarding, saa nye brugere bliver
+        // spurgt om baade notifikationer og placering fra start.
+        onboardingLocationManager.requestLocation()
     }
+
+    @StateObject private var onboardingLocationManager = LocationManager()
 }
 
 // MARK: - Login View
@@ -1084,6 +1114,14 @@ struct DriverOrder: Codable, Identifiable {
     let company: String
     let delivery: Bool
     let mine: Bool
+    var orderTime: String = ""
+    var deliverTime: String = ""
+    var items: [CompanyOrderItem] = []
+    enum CodingKeys: String, CodingKey {
+        case id, customer, address, lat, lng, amount, company, delivery, mine, items
+        case orderTime = "order_time"
+        case deliverTime = "deliver_time"
+    }
 }
 
 struct CompanyOrderItem: Codable, Identifiable {
@@ -1253,6 +1291,7 @@ struct DriverDashboardView: View {
     @State private var refreshTimer: Timer?
     @State private var knownOrderIds: Set<Int> = []
     @State private var didInitialLoad = false
+    @State private var mapsOrder: DriverOrder?
 
     var body: some View {
         ScrollView {
@@ -1275,6 +1314,13 @@ struct DriverDashboardView: View {
         .onAppear { startAutoRefresh() }
         .onDisappear { refreshTimer?.invalidate(); refreshTimer = nil }
         .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
+        .confirmationDialog("Naviger til kunden", isPresented: Binding(get: { mapsOrder != nil }, set: { if !$0 { mapsOrder = nil } }), titleVisibility: .visible) {
+            if let o = mapsOrder {
+                Button("Apple Kort") { openAppleMaps(o); mapsOrder = nil }
+                Button("Google Maps") { openGoogleMaps(o); mapsOrder = nil }
+                Button("Annuller", role: .cancel) { mapsOrder = nil }
+            }
+        }
     }
 
     // Henter leverance-listen hvert 5. sekund, saa nye leverancer dukker op af sig selv.
@@ -1335,9 +1381,34 @@ struct DriverDashboardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            // Hvornaar ordren skal leveres (og hvornaar den blev bestilt)
+            if !order.deliverTime.isEmpty || !order.orderTime.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.fill").font(.caption).foregroundColor(wrombleRed)
+                    if !order.deliverTime.isEmpty {
+                        Text("Leveres \(order.deliverTime)").font(.subheadline.weight(.semibold))
+                    }
+                    if !order.orderTime.isEmpty {
+                        Text("(bestilt \(order.orderTime))").font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            // Hvad der er bestilt - saa chaufføren kan se ordren med sig
+            if !order.items.isEmpty {
+                Divider()
+                ForEach(order.items) { item in
+                    HStack {
+                        Text("\(item.qty)x").font(.subheadline.bold()).foregroundColor(wrombleRed)
+                        Text(item.name).font(.subheadline)
+                        Spacer()
+                    }
+                }
+            }
+
             HStack(spacing: 10) {
-                if order.lat != 0 || order.lng != 0 {
-                    Button(action: { openMaps(order) }) {
+                if order.lat != 0 || order.lng != 0 || !order.address.isEmpty {
+                    Button(action: { mapsOrder = order }) {
                         Label("Rute", systemImage: "location.fill")
                             .font(.subheadline.weight(.semibold))
                             .frame(maxWidth: .infinity).padding(.vertical, 11)
@@ -1360,9 +1431,26 @@ struct DriverDashboardView: View {
         .background(Color(.secondarySystemBackground)).cornerRadius(16)
     }
 
-    func openMaps(_ order: DriverOrder) {
-        let coord = "\(order.lat),\(order.lng)"
-        if let url = URL(string: "http://maps.apple.com/?daddr=\(coord)") { UIApplication.shared.open(url) }
+    // Destination-parameter: brug GPS-koordinater hvis vi har dem, ellers kundens adresse.
+    private func mapsDestination(_ order: DriverOrder) -> String {
+        if order.lat != 0 || order.lng != 0 { return "\(order.lat),\(order.lng)" }
+        return order.address
+    }
+
+    func openAppleMaps(_ order: DriverOrder) {
+        let dest = mapsDestination(order).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        if let url = URL(string: "http://maps.apple.com/?daddr=\(dest)&dirflg=d") { UIApplication.shared.open(url) }
+    }
+
+    func openGoogleMaps(_ order: DriverOrder) {
+        let dest = mapsDestination(order).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        // Aabn Google Maps-appen hvis den er installeret, ellers Google Maps i browseren.
+        if let app = URL(string: "comgooglemaps://?daddr=\(dest)&directionsmode=driving"),
+           UIApplication.shared.canOpenURL(app) {
+            UIApplication.shared.open(app)
+        } else if let web = URL(string: "https://www.google.com/maps/dir/?api=1&destination=\(dest)&travelmode=driving") {
+            UIApplication.shared.open(web)
+        }
     }
 
     func load(showSpinner: Bool = true) async {
@@ -1641,6 +1729,8 @@ struct CompanyDashboardView: View {
     let session: StaffSession
     @State private var busy = false
     @State private var busyLoading = true
+    @State private var autoAccept = true
+    @State private var autoLoading = true
 
     var body: some View {
         List {
@@ -1656,6 +1746,17 @@ struct CompanyDashboardView: View {
                     }
                 }
                 .padding(.vertical, 4)
+            }
+            Section(header: Text("Ordremodtagelse"), footer: Text(autoAccept ? "Alle nye ordrer bliver accepteret automatisk. Du behoever ikke trykke Accepter." : "Du godkender selv hver ordre manuelt under Ordrer.")) {
+                Toggle(isOn: Binding(
+                    get: { autoAccept },
+                    set: { newVal in autoAccept = newVal; setAutoAccept(newVal) }
+                )) {
+                    Label("Accepter alle ordre", systemImage: "checkmark.circle.fill")
+                        .foregroundColor(autoAccept ? wrombleRed : .primary)
+                }
+                .tint(wrombleRed)
+                .disabled(autoLoading)
             }
             Section(header: Text("Status"), footer: Text(busy ? "Kunder kan IKKE bestille lige nu - de faar besked om at der er ekstraordinaert travlt." : "Butikken tager imod bestillinger som normalt.")) {
                 Toggle(isOn: Binding(
@@ -1685,7 +1786,29 @@ struct CompanyDashboardView: View {
         }
         .navigationTitle(session.name.isEmpty ? "Forretning" : session.name)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { loadBusy() }
+        .onAppear { loadBusy(); loadAutoAccept() }
+    }
+
+    func loadAutoAccept() {
+        guard let url = URL(string: "\(baseURL)/api/app-company-autoaccept.php?company_id=\(session.companyId)") else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            var a = true
+            if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                a = (j["auto_accept"] as? Int ?? 1) == 1
+            }
+            DispatchQueue.main.async { autoAccept = a; autoLoading = false }
+        }.resume()
+    }
+
+    func setAutoAccept(_ value: Bool) {
+        guard !autoLoading else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        guard let url = URL(string: "\(baseURL)/api/app-company-autoaccept.php") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["company_id": session.companyId, "auto_accept": value ? 1 : 0])
+        URLSession.shared.dataTask(with: req).resume()
     }
 
     func loadBusy() {
@@ -4649,6 +4772,12 @@ struct OrdersView: View {
 
 // MARK: - Order Tracking (live status-ring som Wolt)
 
+struct TrackPin: Identifiable {
+    let id = UUID()
+    let coordinate: CLLocationCoordinate2D
+    let isCustomer: Bool
+}
+
 struct OrderTrackingView: View {
     let orderId: Int
     var initialCompany: String = ""
@@ -4656,8 +4785,25 @@ struct OrderTrackingView: View {
     @State private var status: OrderStatus?
     @State private var isLoading = true
     @State private var pollTimer: Timer?
+    @State private var mapRegion = MKCoordinateRegion(
+        center: CLLocationCoordinate2D(latitude: 55.676, longitude: 12.568),
+        span: MKCoordinateSpan(latitudeDelta: 0.04, longitudeDelta: 0.04))
+    @State private var didCenterMap = false
 
     let steps = ["Modtaget", "Bekræftet", "På vej", "Leveret"]
+
+    var mapPins: [TrackPin] {
+        var pins: [TrackPin] = []
+        if let s = status {
+            if s.companyLat != 0 || s.companyLng != 0 {
+                pins.append(TrackPin(coordinate: CLLocationCoordinate2D(latitude: s.companyLat, longitude: s.companyLng), isCustomer: false))
+            }
+            if s.isDelivery && (s.customerLat != 0 || s.customerLng != 0) {
+                pins.append(TrackPin(coordinate: CLLocationCoordinate2D(latitude: s.customerLat, longitude: s.customerLng), isCustomer: true))
+            }
+        }
+        return pins
+    }
 
     var stage: Int { status?.stage ?? 0 }
     var isRejected: Bool { stage < 0 }
@@ -4735,6 +4881,41 @@ struct OrderTrackingView: View {
                 .cornerRadius(14)
                 .padding(.horizontal, 20)
 
+                // Kort: vis hvor ordren er (restauranten - og leveringsadressen ved levering).
+                if !mapPins.isEmpty && !isRejected {
+                    VStack(spacing: 10) {
+                        Map(coordinateRegion: $mapRegion, annotationItems: mapPins) { pin in
+                            MapAnnotation(coordinate: pin.coordinate) {
+                                VStack(spacing: 2) {
+                                    Image(systemName: pin.isCustomer ? "house.fill" : "fork.knife.circle.fill")
+                                        .font(.system(size: 26))
+                                        .foregroundColor(pin.isCustomer ? .blue : wrombleRed)
+                                        .background(Circle().fill(.white).frame(width: 22, height: 22))
+                                    Text(pin.isCustomer ? "Dig" : (status?.companyName ?? "Restaurant"))
+                                        .font(.caption2.bold())
+                                        .padding(.horizontal, 5).padding(.vertical, 1)
+                                        .background(Color(.systemBackground).opacity(0.9)).cornerRadius(4)
+                                }
+                            }
+                        }
+                        .frame(height: 220)
+                        .cornerRadius(14)
+                        .allowsHitTesting(false)
+
+                        Button(action: { openInMaps() }) {
+                            HStack {
+                                Image(systemName: "arrow.triangle.turn.up.right.circle.fill")
+                                Text(status?.isDelivery == true ? "Åbn restauranten i Kort" : "Rutevejledning til restauranten")
+                                    .font(.subheadline.weight(.semibold))
+                            }
+                            .foregroundColor(wrombleRed)
+                            .frame(maxWidth: .infinity).padding(.vertical, 12)
+                            .background(wrombleRed.opacity(0.10)).cornerRadius(12)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                }
+
                 if isLoading { ProgressView().padding(.top, 4) }
                 Spacer(minLength: 24)
             }
@@ -4766,6 +4947,36 @@ struct OrderTrackingView: View {
         .padding(.horizontal, 16).padding(.vertical, 14)
     }
 
+    // Centrerer kortet paa restauranten (og zoomer ud saa leveringsadressen ogsaa er med)
+    // foerste gang vi faar koordinater.
+    func centerMapIfNeeded(_ s: OrderStatus) {
+        guard !didCenterMap, s.companyLat != 0 || s.companyLng != 0 else { return }
+        didCenterMap = true
+        if s.isDelivery && (s.customerLat != 0 || s.customerLng != 0) {
+            let midLat = (s.companyLat + s.customerLat) / 2
+            let midLng = (s.companyLng + s.customerLng) / 2
+            let dLat = abs(s.companyLat - s.customerLat) * 1.6 + 0.01
+            let dLng = abs(s.companyLng - s.customerLng) * 1.6 + 0.01
+            mapRegion = MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: midLat, longitude: midLng),
+                span: MKCoordinateSpan(latitudeDelta: dLat, longitudeDelta: dLng))
+        } else {
+            mapRegion = MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: s.companyLat, longitude: s.companyLng),
+                span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02))
+        }
+    }
+
+    // Aabner restaurantens position i Apple Kort med rutevejledning.
+    func openInMaps() {
+        guard let s = status, s.companyLat != 0 || s.companyLng != 0 else { return }
+        let name = (s.companyName).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Restaurant"
+        let coord = "\(s.companyLat),\(s.companyLng)"
+        if let url = URL(string: "http://maps.apple.com/?daddr=\(coord)&q=\(name)&dirflg=d") {
+            UIApplication.shared.open(url)
+        }
+    }
+
     func startPolling() {
         Task { await fetchStatus() }
         pollTimer?.invalidate()
@@ -4786,8 +4997,18 @@ struct OrderTrackingView: View {
                 label: json["label"] as? String ?? "",
                 description: json["description"] as? String ?? "",
                 companyName: json["company_name"] as? String ?? initialCompany,
-                total: (json["total"] as? NSNumber)?.doubleValue ?? 0)
-            await MainActor.run { status = s; isLoading = false }
+                total: (json["total"] as? NSNumber)?.doubleValue ?? 0,
+                isDelivery: (json["is_delivery"] as? Bool) ?? false,
+                companyLat: (json["company_lat"] as? NSNumber)?.doubleValue ?? 0,
+                companyLng: (json["company_lng"] as? NSNumber)?.doubleValue ?? 0,
+                companyAddress: json["company_address"] as? String ?? "",
+                customerLat: (json["customer_lat"] as? NSNumber)?.doubleValue ?? 0,
+                customerLng: (json["customer_lng"] as? NSNumber)?.doubleValue ?? 0)
+            await MainActor.run {
+                status = s
+                isLoading = false
+                centerMapIfNeeded(s)
+            }
         } catch {
             await MainActor.run { isLoading = false }
         }
@@ -5363,7 +5584,18 @@ struct ProfileView: View {
                 }
                 .tint(wrombleRed)
                 .onChange(of: appState.locationEnabled) { newValue in
-                    if newValue { locationManager.requestLocation() }
+                    if newValue {
+                        let s = locationManager.authorizationStatus
+                        if s == .denied || s == .restricted {
+                            // Tilladelsen er slaaet fra i systemet - den kan kun gives i
+                            // iOS-indstillinger, saa vi sender brugeren derhen.
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(url)
+                            }
+                        } else {
+                            locationManager.requestLocation()
+                        }
+                    }
                     appState.save()
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }
@@ -5441,7 +5673,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1.1 (28)").foregroundColor(.secondary)
+                    Text("1.1.1 (29)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
