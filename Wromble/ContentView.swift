@@ -348,6 +348,9 @@ struct ContentView: View {
                 withAnimation(.easeOut(duration: 0.5)) { showSplash = false }
             }
             networkMonitor.start()
+            // Bed om notifikations-tilladelse med det samme ved opstart, saa "Tillad"
+            // vises tidligt (iOS kraever brugerens ja - kan ikke saettes til paa forhaand).
+            wrombleEnsurePushRegistered()
             if !appState.biometricEnabled { appState.isAuthenticated = true }
         }
         .onChange(of: networkMonitor.isConnected) { newValue in
@@ -410,7 +413,7 @@ struct SplashView: View {
     @State private var titleIn = false
     @State private var taglineIn = false
     @State private var glowPulse = false
-    @State private var dance = false
+    @State private var pop = false
 
     // Roed brand-gradient til ordmaerket
     private var wordmarkGradient: LinearGradient {
@@ -452,22 +455,20 @@ struct SplashView: View {
                     .scaleEffect(logoIn ? 1 : 0.55)
                     .opacity(logoIn ? 1 : 0)
 
-                    // "Wromble" - dansende bogstaver med roed gradient, ingen skygge
+                    // "Wromble" - bogstaver der popper ud eet ad gangen med roed gradient
                     HStack(spacing: 1) {
                         ForEach(Array("Wromble".enumerated()), id: \.offset) { idx, ch in
                             Text(String(ch))
                                 .font(.system(size: titleSize(for: geo.size), weight: .black, design: .rounded))
                                 .foregroundStyle(wordmarkGradient)
-                                .offset(y: dance ? -titleSize(for: geo.size) * 0.15 : 0)
+                                .scaleEffect(pop ? 1 : 0.3)
+                                .opacity(pop ? 1 : 0)
                                 .animation(
-                                    .easeInOut(duration: 0.55)
-                                        .repeatForever(autoreverses: true)
-                                        .delay(Double(idx) * 0.09),
-                                    value: dance)
+                                    .spring(response: 0.4, dampingFraction: 0.5)
+                                        .delay(Double(idx) * 0.07),
+                                    value: pop)
                         }
                     }
-                    .scaleEffect(titleIn ? 1 : 0.7)
-                    .opacity(titleIn ? 1 : 0)
                     .offset(y: titleIn ? 0 : 18)
 
                     // Intro-tekst / tagline - stoerre og med glid-ind
@@ -491,8 +492,8 @@ struct SplashView: View {
         withAnimation(.easeOut(duration: 0.6).delay(0.25)) { titleIn = true }
         withAnimation(.easeOut(duration: 0.6).delay(0.5)) { taglineIn = true }
         withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) { glowPulse = true }
-        // Bogstaverne begynder at "danse" naar titlen er kommet ind
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { dance = true }
+        // Bogstaverne "popper" ud eet ad gangen naar logoet er kommet ind
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { pop = true }
     }
 
     func logoSize(for size: CGSize) -> CGFloat {
@@ -1638,6 +1639,8 @@ struct CompanyOrdersView: View {
 
 struct CompanyDashboardView: View {
     let session: StaffSession
+    @State private var busy = false
+    @State private var busyLoading = true
 
     var body: some View {
         List {
@@ -1653,6 +1656,17 @@ struct CompanyDashboardView: View {
                     }
                 }
                 .padding(.vertical, 4)
+            }
+            Section(header: Text("Status"), footer: Text(busy ? "Kunder kan IKKE bestille lige nu - de faar besked om at der er ekstraordinaert travlt." : "Butikken tager imod bestillinger som normalt.")) {
+                Toggle(isOn: Binding(
+                    get: { busy },
+                    set: { newVal in busy = newVal; setBusy(newVal) }
+                )) {
+                    Label("Ekstraordinaert travlt", systemImage: "flame.fill")
+                        .foregroundColor(busy ? wrombleRed : .primary)
+                }
+                .tint(wrombleRed)
+                .disabled(busyLoading)
             }
             Section(header: Text("Administrer")) {
                 NavigationLink { CompanyOrdersView(session: session) } label: {
@@ -1671,6 +1685,29 @@ struct CompanyDashboardView: View {
         }
         .navigationTitle(session.name.isEmpty ? "Forretning" : session.name)
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { loadBusy() }
+    }
+
+    func loadBusy() {
+        guard let url = URL(string: "\(baseURL)/api/app-company-busy.php?company_id=\(session.companyId)") else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            var b = false
+            if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                b = (j["busy"] as? Int ?? 0) == 1
+            }
+            DispatchQueue.main.async { busy = b; busyLoading = false }
+        }.resume()
+    }
+
+    func setBusy(_ value: Bool) {
+        guard !busyLoading else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        guard let url = URL(string: "\(baseURL)/api/app-company-busy.php") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["company_id": session.companyId, "busy": value ? 1 : 0])
+        URLSession.shared.dataTask(with: req).resume()
     }
 }
 
@@ -5404,7 +5441,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1.1 (27)").foregroundColor(.secondary)
+                    Text("1.1.1 (28)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
