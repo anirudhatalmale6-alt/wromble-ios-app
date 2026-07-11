@@ -354,14 +354,16 @@ struct ContentView: View {
                 withAnimation(.easeOut(duration: 0.5)) { showSplash = false }
             }
             networkMonitor.start()
-            // Bed om notifikations-tilladelse med det samme ved opstart, saa "Tillad"
-            // vises tidligt (iOS kraever brugerens ja - kan ikke saettes til paa forhaand).
-            wrombleEnsurePushRegistered()
-            // Bed ogsaa om placering ved opstart, saa iOS spoerger tidligt. Toggles i
-            // Profil synkroniseres automatisk med systemets faktiske svar (se onChange).
-            locationManager.requestLocation()
             syncLocationPreference(locationManager.authorizationStatus)
             if !appState.biometricEnabled { appState.isAuthenticated = true }
+            // Vent til splash-skaermen (logo) har vaeret vist, foer vi beder om
+            // tilladelser - ellers daekker iOS-dialogen logoet med det samme. Efter
+            // ca. 2,6 sek. er logoet vist faerdigt, og saa spoerger vi om notifikationer
+            // og placering. iOS kraever stadig brugerens ja - kan ikke saettes paa forhaand.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) {
+                wrombleEnsurePushRegistered()
+                locationManager.requestLocation()
+            }
         }
         .onChange(of: networkMonitor.isConnected) { newValue in
             appState.networkAvailable = newValue
@@ -5673,7 +5675,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1.1 (29)").foregroundColor(.secondary)
+                    Text("1.1.1 (30)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
