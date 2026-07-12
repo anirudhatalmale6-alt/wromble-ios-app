@@ -1311,6 +1311,13 @@ struct DriverDashboardView: View {
         }
         .navigationTitle("Chauffoer")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                NavigationLink { StripeEarningsView(recipientType: "rider", recipientId: session.id, heading: "Drikkepenge") } label: {
+                    Image(systemName: "banknote.fill")
+                }
+            }
+        }
         .refreshable { await load() }
         .task { await load() }
         .onAppear { startAutoRefresh() }
@@ -1781,6 +1788,9 @@ struct CompanyDashboardView: View {
                 NavigationLink { CompanyHoursView(session: session) } label: {
                     Label("Aabningstider", systemImage: "clock.fill").foregroundColor(.primary)
                 }
+                NavigationLink { StripeEarningsView(recipientType: "company", recipientId: session.companyId, heading: "Drikkepenge") } label: {
+                    Label("Drikkepenge", systemImage: "banknote.fill").foregroundColor(.primary)
+                }
                 NavigationLink { CompanyProfileView(session: session) } label: {
                     Label("Indstillinger", systemImage: "gearshape.fill").foregroundColor(.primary)
                 }
@@ -1833,6 +1843,202 @@ struct CompanyDashboardView: View {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["company_id": session.companyId, "busy": value ? 1 : 0])
         URLSession.shared.dataTask(with: req).resume()
+    }
+}
+
+// MARK: - Drikkepenge / Saldo (chauffoer + forretning)
+// Viser modtagerens drikkepenge-saldo, lader dem tilslutte deres egen Stripe-konto
+// og udbetale saldoen til deres bank. Bruges baade af chauffoer og restaurant/butik.
+struct StripeTipRow: Identifiable, Codable {
+    let id: Int
+    let amount: Double
+    let order_id: Int
+    let date: Int
+}
+
+struct StripeEarningsView: View {
+    let recipientType: String   // "rider" eller "company"
+    let recipientId: Int
+    let heading: String
+
+    @State private var balance: Double = 0
+    @State private var earned: Double = 0
+    @State private var paidOut: Double = 0
+    @State private var tips: [StripeTipRow] = []
+    @State private var payoutsEnabled = false
+    @State private var detailsSubmitted = false
+    @State private var loading = true
+    @State private var working = false
+    @State private var message: String?
+
+    var body: some View {
+        List {
+            // Saldo-kort
+            Section {
+                VStack(spacing: 6) {
+                    Text("Din saldo").font(.subheadline).foregroundColor(.secondary)
+                    Text(String(format: "%.2f kr", balance))
+                        .font(.system(size: 40, weight: .bold)).foregroundColor(wrombleRed)
+                    if earned > 0 || paidOut > 0 {
+                        Text("Optjent \(String(format: "%.0f", earned)) kr · Udbetalt \(String(format: "%.0f", paidOut)) kr")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 10)
+            }
+
+            // Stripe-tilslutning + udbetaling
+            Section(header: Text("Udbetaling"), footer: Text(payoutsEnabled
+                ? "Din konto er tilsluttet. Tryk Udbetal for at sende saldoen til din bank."
+                : "Tilslut din egen konto for at kunne faa drikkepengene udbetalt. Det er gratis og tager et par minutter.")) {
+
+                if payoutsEnabled {
+                    HStack {
+                        Image(systemName: "checkmark.seal.fill").foregroundColor(.green)
+                        Text("Konto tilsluttet").foregroundColor(.primary)
+                    }
+                    Button(action: payout) {
+                        HStack {
+                            Spacer()
+                            if working { ProgressView().tint(.white) }
+                            else { Text(balance >= 1 ? "Udbetal \(String(format: "%.0f", balance)) kr" : "Ingen saldo at udbetale").font(.headline) }
+                            Spacer()
+                        }
+                        .foregroundColor(.white).padding(.vertical, 6)
+                    }
+                    .listRowBackground(balance >= 1 ? wrombleRed : Color.gray)
+                    .disabled(working || balance < 1)
+                } else {
+                    Button(action: connect) {
+                        HStack {
+                            Spacer()
+                            if working { ProgressView().tint(.white) }
+                            else { Label(detailsSubmitted ? "Faerdiggoer tilslutning" : "Tilslut Stripe", systemImage: "link").font(.headline) }
+                            Spacer()
+                        }
+                        .foregroundColor(.white).padding(.vertical, 6)
+                    }
+                    .listRowBackground(wrombleRed)
+                    .disabled(working)
+                }
+            }
+
+            if let m = message, !m.isEmpty {
+                Section { Text(m).font(.subheadline).foregroundColor(.primary) }
+            }
+
+            // Seneste drikkepenge
+            if !tips.isEmpty {
+                Section(header: Text("Seneste drikkepenge")) {
+                    ForEach(tips) { t in
+                        HStack {
+                            Image(systemName: "gift.fill").foregroundColor(wrombleRed)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(String(format: "%.2f kr", t.amount)).font(.subheadline.weight(.semibold))
+                                if t.order_id > 0 { Text("Ordre #\(t.order_id)").font(.caption).foregroundColor(.secondary) }
+                            }
+                            Spacer()
+                        }
+                    }
+                }
+            } else if !loading {
+                Section {
+                    Text("Ingen drikkepenge endnu. De dukker op her, naar en kunde giver drikkepenge.")
+                        .font(.subheadline).foregroundColor(.secondary)
+                }
+            }
+        }
+        .navigationTitle(heading)
+        .navigationBarTitleDisplayMode(.inline)
+        .refreshable { await loadAsync() }
+        .task { await loadAsync() }
+        // Genindlaes naar man kommer tilbage fra Safari (efter tilslutning/udbetaling)
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            Task { await loadAsync() }
+        }
+    }
+
+    func loadAsync() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            var doneBalance = false, doneStatus = false
+            func maybeFinish() { if doneBalance && doneStatus { cont.resume() } }
+
+            // Saldo
+            if let url = URL(string: "\(baseURL)/api/app-tips-balance.php?type=\(recipientType)&id=\(recipientId)") {
+                URLSession.shared.dataTask(with: url) { data, _, _ in
+                    if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        DispatchQueue.main.async {
+                            balance = j["balance"] as? Double ?? (j["balance"] as? NSNumber)?.doubleValue ?? 0
+                            earned = j["earned"] as? Double ?? (j["earned"] as? NSNumber)?.doubleValue ?? 0
+                            paidOut = j["paid_out"] as? Double ?? (j["paid_out"] as? NSNumber)?.doubleValue ?? 0
+                            if let arr = j["tips"], let d = try? JSONSerialization.data(withJSONObject: arr),
+                               let rows = try? JSONDecoder().decode([StripeTipRow].self, from: d) { tips = rows }
+                        }
+                    }
+                    DispatchQueue.main.async { doneBalance = true; maybeFinish() }
+                }.resume()
+            } else { doneBalance = true }
+
+            // Stripe-status
+            if let url = URL(string: "\(baseURL)/api/app-stripe-connect.php?type=\(recipientType)&id=\(recipientId)") {
+                URLSession.shared.dataTask(with: url) { data, _, _ in
+                    if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        DispatchQueue.main.async {
+                            payoutsEnabled = j["payouts_enabled"] as? Bool ?? false
+                            detailsSubmitted = j["details_submitted"] as? Bool ?? false
+                        }
+                    }
+                    DispatchQueue.main.async { doneStatus = true; loading = false; maybeFinish() }
+                }.resume()
+            } else { doneStatus = true }
+        }
+    }
+
+    func connect() {
+        working = true; message = nil
+        guard let url = URL(string: "\(baseURL)/api/app-stripe-connect.php") else { working = false; return }
+        var req = URLRequest(url: url); req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["type": recipientType, "id": recipientId])
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            DispatchQueue.main.async {
+                working = false
+                guard let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    message = "Netvaerksfejl. Proev igen."; return
+                }
+                if let s = j["onboarding_url"] as? String, let u = URL(string: s) {
+                    UIApplication.shared.open(u)
+                } else if j["connect_disabled"] as? Bool == true {
+                    message = "Stripe Connect er ikke aktiveret paa kontoen endnu."
+                } else {
+                    message = (j["error"] as? String) ?? "Kunne ikke starte tilslutning."
+                }
+            }
+        }.resume()
+    }
+
+    func payout() {
+        working = true; message = nil
+        guard let url = URL(string: "\(baseURL)/api/app-tips-payout.php") else { working = false; return }
+        var req = URLRequest(url: url); req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["type": recipientType, "id": recipientId])
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            DispatchQueue.main.async {
+                working = false
+                guard let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    message = "Netvaerksfejl. Proev igen."; return
+                }
+                if j["success"] as? Bool == true {
+                    let amt = j["amount"] as? Double ?? (j["amount"] as? NSNumber)?.doubleValue ?? 0
+                    message = String(format: "Udbetaling paa %.0f kr er sendt til din bank.", amt)
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    Task { await loadAsync() }
+                } else {
+                    message = (j["error"] as? String) ?? "Udbetaling mislykkedes."
+                }
+            }
+        }.resume()
     }
 }
 
@@ -4290,6 +4496,10 @@ struct CartView: View {
     @State private var isDelivery = false            // false = Afhentning, true = Levering
     @State private var deliveryAddress = ""
     @State private var paymentMethod = 2             // 1 = Online betaling, 2 = Kontanter
+    // Drikkepenge til chaufføeren (kun ved levering). Betales separat med kort.
+    @State private var tipAmount: Double = 0
+    @State private var customTip = ""
+    @State private var tipCheckoutOpened = false
     // Aabningstider for butikken i kurven - saa der ikke kan bestilles naar lukket
     @State private var hoursDays: [CompanyHourDay] = []
     @State private var shopStatus = ""
@@ -4407,6 +4617,39 @@ struct CartView: View {
                 }
             }
 
+            // Drikkepenge til chaufføeren - kun relevant ved levering
+            if isDelivery {
+                Section(header: Text("Drikkepenge til chaufføeren"),
+                        footer: Text("Frivilligt. Betales separat med kort, og hele beloebet gaar til chaufføeren.")) {
+                    HStack(spacing: 8) {
+                        ForEach([0, 10, 20, 30], id: \.self) { amt in
+                            Button(action: {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                tipAmount = Double(amt); customTip = ""
+                            }) {
+                                Text(amt == 0 ? "Ingen" : "\(amt) kr")
+                                    .font(.subheadline.weight(.semibold))
+                                    .frame(maxWidth: .infinity).padding(.vertical, 9)
+                                    .foregroundColor(tipAmount == Double(amt) && customTip.isEmpty ? .white : .primary)
+                                    .background(tipAmount == Double(amt) && customTip.isEmpty ? wrombleRed : Color(.tertiarySystemBackground))
+                                    .cornerRadius(10)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    HStack(spacing: 8) {
+                        Image(systemName: "square.and.pencil").foregroundColor(wrombleRed)
+                        TextField("Andet beloeb (kr)", text: $customTip)
+                            .keyboardType(.decimalPad)
+                            .onChange(of: customTip) { newVal in
+                                let cleaned = newVal.replacingOccurrences(of: ",", with: ".")
+                                tipAmount = Double(cleaned) ?? 0
+                            }
+                    }
+                }
+            }
+
             Section(header: Text("Note til restaurant")) {
                 TextField("Allergier, leveringsinstruktioner...", text: $orderNote)
             }
@@ -4499,6 +4742,29 @@ struct CartView: View {
             Text("Din ordre er sendt til restauranten og afventer nu deres bekraeftelse. Du faar besked, saa snart den er accepteret.")
                 .font(.body).foregroundColor(.secondary)
                 .multilineTextAlignment(.center).padding(.horizontal, 40)
+
+            // Drikkepenge til chaufføeren - betales separat med kort
+            if tipAmount >= 1 {
+                VStack(spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "gift.fill").foregroundColor(wrombleRed)
+                        Text(String(format: "Drikkepenge til chaufføeren: %.0f kr", tipAmount)).font(.subheadline.weight(.semibold))
+                    }
+                    Button(action: { startTipCheckout(orderId: orderId) }) {
+                        HStack {
+                            Image(systemName: tipCheckoutOpened ? "arrow.up.right.square" : "creditcard.fill")
+                            Text(tipCheckoutOpened ? "Betaling aabnet i Safari" : "Betal drikkepenge nu").font(.headline)
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: sizeClass == .regular ? 300 : .infinity)
+                        .padding(.vertical, 14).background(wrombleRed).cornerRadius(14)
+                    }
+                }
+                .padding(16)
+                .background(Color(.secondarySystemBackground)).cornerRadius(16)
+                .padding(.horizontal, 30)
+            }
+
             VStack(spacing: 12) {
                 NavigationLink(destination: OrderTrackingView(orderId: orderId, initialCompany: cart.restaurantName)) {
                     HStack {
@@ -4606,6 +4872,30 @@ struct CartView: View {
                     showOrderConfirmation = true
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     scheduleOrderNotification(orderId: oid)
+                }
+            }
+        }.resume()
+    }
+
+    // Aabner Stripe Checkout i Safari, saa kunden kan betale drikkepenge til chaufføeren.
+    func startTipCheckout(orderId: Int) {
+        guard tipAmount >= 1, let url = URL(string: "\(baseURL)/api/app-tip-checkout.php") else { return }
+        var req = URLRequest(url: url); req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "amount": tipAmount,
+            "recipient_type": "rider",
+            "recipient_id": 0,
+            "order_id": orderId,
+            "label": "Drikkepenge til chaufføeren"
+        ])
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            DispatchQueue.main.async {
+                if let data = data,
+                   let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let s = j["checkout_url"] as? String, let u = URL(string: s) {
+                    tipCheckoutOpened = true
+                    UIApplication.shared.open(u)
                 }
             }
         }.resume()
@@ -5675,7 +5965,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1.1 (30)").foregroundColor(.secondary)
+                    Text("1.1.1 (31)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
