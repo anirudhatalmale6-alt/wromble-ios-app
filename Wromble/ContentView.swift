@@ -1268,6 +1268,23 @@ struct StaffDashboardView: View {
                 }
             }
         }
+        .onAppear { ensurePushForSession() }
+    }
+
+    // Sikrer at notifikationer virker uanset hvordan forretningen/chaufføren kom hertil.
+    // Hvis appen blev opdateret mens man allerede var logget ind, koeres login-handleren
+    // (som normalt beder om tilladelse + registrerer token) aldrig igen - saa vi beder om
+    // tilladelse og registrerer device-token'et her, hver gang dashboardet vises.
+    func ensurePushForSession() {
+        if session.type == "rider" && session.id > 0 {
+            UserDefaults.standard.set(session.id, forKey: "riderPushId")
+            UserDefaults.standard.set(session.companyId, forKey: "companyPushId")
+        } else if session.companyId > 0 {
+            UserDefaults.standard.set(session.companyId, forKey: "companyPushId")
+            UserDefaults.standard.set(0, forKey: "riderPushId")
+        }
+        wrombleEnsurePushRegistered()   // beder om notifikations-tilladelse + genhenter APNs-token
+        wrombleSyncPushToken()          // registrerer token med det samme hvis det allerede findes
     }
 }
 
@@ -5965,7 +5982,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1.1 (31)").foregroundColor(.secondary)
+                    Text("1.1.1 (32)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
