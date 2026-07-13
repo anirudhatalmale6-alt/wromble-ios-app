@@ -24,6 +24,8 @@ class AppState: ObservableObject {
     @Published var hasCompletedOnboarding: Bool = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
     @Published var isAuthenticated: Bool = false
     @Published var networkAvailable: Bool = true
+    // Forretnings-/chauffoer-login der overlever app-genstart (gemt i UserDefaults).
+    @Published var staffSession: StaffSession? = wrombleLoadStaffSession()
 
     func save() {
         UserDefaults.standard.set(notificationsEnabled, forKey: "notificationsEnabled")

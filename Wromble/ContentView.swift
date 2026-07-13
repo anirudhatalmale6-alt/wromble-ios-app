@@ -334,6 +334,14 @@ struct ContentView: View {
     @StateObject private var locationManager = LocationManager()
     @StateObject private var networkMonitor = NetworkMonitor()
 
+    // Praesenterer forretnings-dashboardet - men ikke mens biometrisk laas kraever login.
+    private var staffSessionBinding: Binding<StaffSession?> {
+        Binding(
+            get: { (appState.biometricEnabled && !appState.isAuthenticated) ? nil : appState.staffSession },
+            set: { appState.staffSession = $0 }
+        )
+    }
+
     var body: some View {
         ZStack {
             if !appState.hasCompletedOnboarding {
@@ -348,6 +356,12 @@ struct ContentView: View {
                     .transition(.opacity)
                     .zIndex(10)
             }
+        }
+        // Forretning/chauffoer forbliver logget ind paa tvaers af app-genstart.
+        // Dashboardet praesenteres fra roden, saa det virker uanset hvordan man
+        // loggede ind - og vises ikke mens biometrisk laas er aktiv.
+        .fullScreenCover(item: staffSessionBinding) { session in
+            StaffDashboardView(session: session)
         }
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
@@ -761,13 +775,33 @@ enum LoginRole: String, CaseIterable {
 }
 
 // Login-session for personale (chauffoer / forretning) - holdes adskilt fra kunde-login
-struct StaffSession: Identifiable {
+struct StaffSession: Identifiable, Codable {
     let id: Int
     let name: String
     let email: String
     let companyId: Int
     let role: String
     let type: String   // "rider" eller "company"
+}
+
+// Gemmer forretnings-/chauffoer-login, saa man forbliver logget ind naar appen
+// aabnes igen. Uden dette nulstilles @State ved hver app-genstart og man ryger
+// tilbage til login-skaermen (det var derfor appen "loggede ud" hele tiden).
+private let wrombleStaffSessionKey = "wrombleStaffSession"
+
+func wrombleSaveStaffSession(_ s: StaffSession) {
+    if let data = try? JSONEncoder().encode(s) {
+        UserDefaults.standard.set(data, forKey: wrombleStaffSessionKey)
+    }
+}
+
+func wrombleLoadStaffSession() -> StaffSession? {
+    guard let data = UserDefaults.standard.data(forKey: wrombleStaffSessionKey) else { return nil }
+    return try? JSONDecoder().decode(StaffSession.self, from: data)
+}
+
+func wrombleClearStaffSession() {
+    UserDefaults.standard.removeObject(forKey: wrombleStaffSessionKey)
 }
 
 struct LoginView: View {
@@ -782,7 +816,6 @@ struct LoginView: View {
     @State private var phone = ""
     @State private var errorMessage = ""
     @State private var isLoading = false
-    @State private var staffSession: StaffSession?
     var onLogin: (UserProfile) -> Void
 
     var body: some View {
@@ -882,9 +915,6 @@ struct LoginView: View {
             }
             .padding(.horizontal, sizeClass == .regular ? 60 : 24)
         }
-        .fullScreenCover(item: $staffSession) { session in
-            StaffDashboardView(session: session)
-        }
         .onChange(of: role) { _ in errorMessage = "" }
     }
 
@@ -972,7 +1002,9 @@ struct LoginView: View {
                     } else if session.type == "rider" && session.id > 0 {
                         registerRiderPushToken(riderId: session.id, companyId: session.companyId)
                     }
-                    staffSession = session
+                    // Gem login saa det overlever app-genstart, og vis dashboardet fra roden.
+                    wrombleSaveStaffSession(session)
+                    appState.staffSession = session
                 }
             }
         }.resume()
@@ -1246,6 +1278,7 @@ func paymentLabel(_ p: Int) -> String {
 
 struct StaffDashboardView: View {
     let session: StaffSession
+    @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) var dismiss
 
     var body: some View {
@@ -1259,7 +1292,12 @@ struct StaffDashboardView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(action: { dismiss() }) {
+                    Button(action: {
+                        // Ryd det gemte login, saa man IKKE bliver logget ind igen ved genstart.
+                        wrombleClearStaffSession()
+                        appState.staffSession = nil
+                        dismiss()
+                    }) {
                         HStack(spacing: 4) {
                             Image(systemName: "rectangle.portrait.and.arrow.right")
                             Text("Log ud")
@@ -5982,7 +6020,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1.1 (32)").foregroundColor(.secondary)
+                    Text("1.1.1 (33)").foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
