@@ -27,42 +27,64 @@ jobs:
           printf '%s' "$P8_KEY" > ~/private_keys/AuthKey_${API_KEY_ID}.p8
           echo "API key installed"
 
-      - name: Build Signed Archive
+      - name: Enable Push Notifications capability on App ID
         run: |
-          # Sign the archive with automatic (cloud-managed) provisioning so the
-          # entitlements - crucially aps-environment (push) and Sign in with Apple -
-          # are actually compiled into the binary. -allowProvisioningUpdates lets
-          # xcodebuild enable the Push Notifications capability on the App ID and
-          # create/refresh a matching distribution profile via the App Store API key.
-          # (The previous unsigned build dropped aps-environment, so devices never
-          # got an APNs token and no push could be delivered.)
+          # The distribution signing at export only grants aps-environment (push) if
+          # the App ID dk.wromble.app has the Push Notifications capability enabled in
+          # the Developer portal. Previous builds shipped WITHOUT push because it was
+          # never enabled, so devices could never obtain an APNs token. Enable it here
+          # via the App Store Connect API using the same .p8 key CI already holds.
+          pip3 install --quiet pyjwt cryptography
+          python3 - << 'PY'
+          import jwt, time, json, os, urllib.request, urllib.error
+          kid = os.environ['API_KEY_ID']; iss = os.environ['API_ISSUER_ID']
+          key = open(os.path.expanduser(f'~/private_keys/AuthKey_{kid}.p8')).read()
+          tok = jwt.encode(
+              {'iss': iss, 'iat': int(time.time()), 'exp': int(time.time()) + 600,
+               'aud': 'appstoreconnect-v1'},
+              key, algorithm='ES256', headers={'kid': kid, 'typ': 'JWT'})
+          H = {'Authorization': f'Bearer {tok}'}
+          # Look up the internal resource id of the bundle id
+          req = urllib.request.Request(
+              'https://api.appstoreconnect.apple.com/v1/bundleIds?filter%5Bidentifier%5D=dk.wromble.app',
+              headers=H)
+          data = json.load(urllib.request.urlopen(req))
+          if not data['data']:
+              print('ERROR: bundle id dk.wromble.app not found on account'); raise SystemExit(1)
+          bid = data['data'][0]['id']
+          print('bundleId resource:', bid)
+          # Enable Push Notifications capability (409 = already enabled, which is fine)
+          body = {'data': {'type': 'bundleIdCapabilities',
+                           'attributes': {'capabilityType': 'PUSH_NOTIFICATIONS'},
+                           'relationships': {'bundleId': {'data': {'type': 'bundleIds', 'id': bid}}}}}
+          req = urllib.request.Request(
+              'https://api.appstoreconnect.apple.com/v1/bundleIdCapabilities',
+              data=json.dumps(body).encode(),
+              headers={**H, 'Content-Type': 'application/json'}, method='POST')
+          try:
+              r = urllib.request.urlopen(req)
+              print('Push Notifications capability ENABLED (HTTP', r.status, ')')
+          except urllib.error.HTTPError as e:
+              msg = e.read().decode()
+              if e.code == 409:
+                  print('Push Notifications capability already enabled (409) - OK')
+              else:
+                  print('WARNING: could not enable push capability HTTP', e.code, msg[:500])
+          PY
+
+      - name: Build Unsigned Archive
+        run: |
           xcodebuild archive \
             -project Wromble.xcodeproj \
             -scheme Wromble \
             -configuration Release \
             -archivePath build/Wromble.xcarchive \
             -destination 'generic/platform=iOS' \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath ~/private_keys/AuthKey_${API_KEY_ID}.p8 \
-            -authenticationKeyID ${API_KEY_ID} \
-            -authenticationKeyIssuerID ${API_ISSUER_ID} \
-            DEVELOPMENT_TEAM=ZS527A3WH2 \
-            CODE_SIGN_STYLE=Automatic
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
 
-      - name: Verify push entitlement is embedded
-        run: |
-          APP="build/Wromble.xcarchive/Products/Applications/Wromble.app"
-          echo "=== Signed entitlements ==="
-          codesign -d --entitlements :- "$APP" 2>/dev/null || echo "codesign entitlements read failed"
-          echo "=== aps-environment check ==="
-          if codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q "aps-environment"; then
-            echo "OK: aps-environment present - push will work"
-          else
-            echo "ERROR: aps-environment MISSING - push will NOT work"
-            exit 1
-          fi
-
-      - name: Export & Upload to App Store
+      - name: Export signed IPA
         run: |
           cat > ExportOptions.plist << 'EOXML'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -74,7 +96,7 @@ jobs:
             <key>teamID</key>
             <string>ZS527A3WH2</string>
             <key>destination</key>
-            <string>upload</string>
+            <string>export</string>
             <key>signingStyle</key>
             <string>automatic</string>
           </dict>
@@ -90,12 +112,32 @@ jobs:
             -authenticationKeyIssuerID ${API_ISSUER_ID} \
             -allowProvisioningUpdates
 
+      - name: Verify push entitlement is in the IPA
+        run: |
+          cd build/ipa
+          IPA=$(ls *.ipa | head -1)
+          echo "IPA: $IPA"
+          rm -rf x && mkdir x && (cd x && unzip -q ../"$IPA")
+          APP=$(ls -d x/Payload/*.app)
+          echo "=== Signed entitlements ==="
+          codesign -d --entitlements :- "$APP" 2>/dev/null || true
+          if codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q "aps-environment"; then
+            echo "OK: aps-environment present - push will work"
+          else
+            echo "ERROR: aps-environment MISSING - push will NOT work"
+            exit 1
+          fi
+
+      - name: Upload to App Store
+        run: |
+          xcrun altool --upload-app -t ios -f build/ipa/*.ipa \
+            --apiKey ${API_KEY_ID} --apiIssuer ${API_ISSUER_ID}
+
       - name: Upload Artifacts (Backup)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Wromble-Build
           path: |
-            build/ipa/
-            build/Wromble.xcarchive
+            build/ipa/*.ipa
           if-no-files-found: warn
