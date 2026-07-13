@@ -27,52 +27,107 @@ jobs:
           printf '%s' "$P8_KEY" > ~/private_keys/AuthKey_${API_KEY_ID}.p8
           echo "API key installed"
 
-      - name: Enable Push Notifications capability on App ID
+      - name: Create distribution certificate + App Store profile (with Push)
         run: |
-          # The distribution signing at export only grants aps-environment (push) if
-          # the App ID dk.wromble.app has the Push Notifications capability enabled in
-          # the Developer portal. Previous builds shipped WITHOUT push because it was
-          # never enabled, so devices could never obtain an APNs token. Enable it here
-          # via the App Store Connect API using the same .p8 key CI already holds.
+          set -e
           pip3 install --quiet --break-system-packages pyjwt cryptography
+          # Private key + CSR for a fresh distribution certificate
+          openssl genrsa -out /tmp/dist.key 2048
+          openssl req -new -key /tmp/dist.key -out /tmp/dist.csr -subj "/CN=Wromble CI/O=Wromble/C=DK"
+
           python3 - << 'PY'
           import jwt, time, json, os, urllib.request, urllib.error
           kid = os.environ['API_KEY_ID']; iss = os.environ['API_ISSUER_ID']
           key = open(os.path.expanduser(f'~/private_keys/AuthKey_{kid}.p8')).read()
-          tok = jwt.encode(
-              {'iss': iss, 'iat': int(time.time()), 'exp': int(time.time()) + 600,
-               'aud': 'appstoreconnect-v1'},
-              key, algorithm='ES256', headers={'kid': kid, 'typ': 'JWT'})
-          H = {'Authorization': f'Bearer {tok}'}
-          # Look up the internal resource id of the bundle id
-          req = urllib.request.Request(
-              'https://api.appstoreconnect.apple.com/v1/bundleIds?filter%5Bidentifier%5D=dk.wromble.app',
-              headers=H)
-          data = json.load(urllib.request.urlopen(req))
-          if not data['data']:
-              print('ERROR: bundle id dk.wromble.app not found on account'); raise SystemExit(1)
-          bid = data['data'][0]['id']
-          print('bundleId resource:', bid)
-          # Enable Push Notifications capability (409 = already enabled, which is fine)
-          body = {'data': {'type': 'bundleIdCapabilities',
-                           'attributes': {'capabilityType': 'PUSH_NOTIFICATIONS'},
-                           'relationships': {'bundleId': {'data': {'type': 'bundleIds', 'id': bid}}}}}
-          req = urllib.request.Request(
-              'https://api.appstoreconnect.apple.com/v1/bundleIdCapabilities',
-              data=json.dumps(body).encode(),
-              headers={**H, 'Content-Type': 'application/json'}, method='POST')
-          try:
-              r = urllib.request.urlopen(req)
-              print('Push Notifications capability ENABLED (HTTP', r.status, ')')
-          except urllib.error.HTTPError as e:
-              msg = e.read().decode()
-              if e.code == 409:
-                  print('Push Notifications capability already enabled (409) - OK')
-              else:
-                  print('WARNING: could not enable push capability HTTP', e.code, msg[:500])
+          def tok():
+              return jwt.encode({'iss': iss, 'iat': int(time.time()), 'exp': int(time.time())+900,
+                                 'aud': 'appstoreconnect-v1'}, key, algorithm='ES256',
+                                headers={'kid': kid, 'typ': 'JWT'})
+          def api(method, url, body=None):
+              H = {'Authorization': f'Bearer {tok()}', 'Content-Type': 'application/json'}
+              data = json.dumps(body).encode() if body else None
+              req = urllib.request.Request(url, data=data, headers=H, method=method)
+              try:
+                  r = urllib.request.urlopen(req)
+                  raw = r.read().decode()
+                  return r.status, (json.loads(raw) if raw else {})
+              except urllib.error.HTTPError as e:
+                  return e.code, json.loads(e.read().decode() or '{}')
+          BASE = 'https://api.appstoreconnect.apple.com/v1'
+
+          # Bundle id resource + ensure Push capability is on
+          st, res = api('GET', BASE + '/bundleIds?filter%5Bidentifier%5D=dk.wromble.app')
+          bid = res['data'][0]['id']; print('bundleId:', bid)
+          st, r2 = api('POST', BASE + '/bundleIdCapabilities',
+                       {'data': {'type': 'bundleIdCapabilities',
+                                 'attributes': {'capabilityType': 'PUSH_NOTIFICATIONS'},
+                                 'relationships': {'bundleId': {'data': {'type': 'bundleIds', 'id': bid}}}}})
+          print('push capability:', 'enabled' if st < 400 else f'already/err {st}')
+
+          # Free a slot: revoke existing non-managed distribution certs
+          st, res = api('GET', BASE + '/certificates?filter%5BcertificateType%5D=IOS_DISTRIBUTION&limit=200')
+          for c in res.get('data', []):
+              d, _ = api('DELETE', BASE + f"/certificates/{c['id']}")
+              print('revoked old cert', c['id'], d)
+
+          # Create the distribution certificate from our CSR
+          csr = open('/tmp/dist.csr').read()
+          st, res = api('POST', BASE + '/certificates',
+                        {'data': {'type': 'certificates',
+                                  'attributes': {'certificateType': 'IOS_DISTRIBUTION', 'csrContent': csr}}})
+          print('cert create HTTP', st)
+          if st >= 400:
+              print(json.dumps(res)[:1000]); raise SystemExit(1)
+          cert = res['data']; cert_id = cert['id']
+          open('/tmp/cert.b64', 'w').write(cert['attributes']['certificateContent'])
+          print('cert id:', cert_id)
+
+          # Recreate the App Store profile bound to bundle + this cert
+          st, res = api('GET', BASE + '/profiles?filter%5Bname%5D=Wromble%20CI%20AppStore')
+          for p in res.get('data', []):
+              api('DELETE', BASE + f"/profiles/{p['id']}")
+              print('deleted old profile', p['id'])
+          st, res = api('POST', BASE + '/profiles',
+                        {'data': {'type': 'profiles',
+                                  'attributes': {'name': 'Wromble CI AppStore', 'profileType': 'IOS_APP_STORE'},
+                                  'relationships': {'bundleId': {'data': {'type': 'bundleIds', 'id': bid}},
+                                                    'certificates': {'data': [{'type': 'certificates', 'id': cert_id}]}}}})
+          print('profile create HTTP', st)
+          if st >= 400:
+              print(json.dumps(res)[:1000]); raise SystemExit(1)
+          open('/tmp/profile.b64', 'w').write(res['data']['attributes']['profileContent'])
+          print('profile ready')
           PY
 
-      - name: Build Unsigned Archive
+          # Build .p12 from key + issued cert
+          base64 -D -i /tmp/cert.b64 -o /tmp/dist.cer
+          openssl x509 -inform DER -in /tmp/dist.cer -out /tmp/dist.pem
+          openssl pkcs12 -export -inkey /tmp/dist.key -in /tmp/dist.pem \
+            -out /tmp/dist.p12 -passout pass:ci -name wromble_dist
+
+          # Temporary keychain holding the signing identity
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security set-keychain-settings -t 3600 -l build.keychain
+          security import /tmp/dist.p12 -k build.keychain -P ci -T /usr/bin/codesign -T /usr/bin/security
+          security list-keychains -d user -s build.keychain login.keychain
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
+
+          # Install the provisioning profile
+          base64 -D -i /tmp/profile.b64 -o /tmp/wromble.mobileprovision
+          security cms -D -i /tmp/wromble.mobileprovision > /tmp/profile.plist
+          UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /tmp/profile.plist)
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp /tmp/wromble.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
+          echo "Installed profile UUID $UUID"
+
+          # Record the exact signing identity name
+          IDENTITY=$(security find-identity -v -p codesigning build.keychain | grep -oE '"[^"]+"' | head -1 | tr -d '"')
+          echo "Signing identity: $IDENTITY"
+          echo "SIGN_IDENTITY=$IDENTITY" >> $GITHUB_ENV
+
+      - name: Build & Archive (manual signing)
         run: |
           xcodebuild archive \
             -project Wromble.xcodeproj \
@@ -80,43 +135,15 @@ jobs:
             -configuration Release \
             -archivePath build/Wromble.xcarchive \
             -destination 'generic/platform=iOS' \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
-
-      - name: Inject entitlements into archive
-        run: |
-          # An unsigned build never writes archived-expanded-entitlements.xcent,
-          # so the export re-sign has no idea the app wants aps-environment (push)
-          # or Sign in with Apple, and emits only the profile's default entitlements.
-          # Write that file ourselves from the real entitlements so automatic export
-          # signing requests push. (Push capability is already enabled on the App ID.)
-          APP="build/Wromble.xcarchive/Products/Applications/Wromble.app"
-          cat > "$APP/archived-expanded-entitlements.xcent" << 'EOENT'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>application-identifier</key>
-            <string>ZS527A3WH2.dk.wromble.app</string>
-            <key>aps-environment</key>
-            <string>production</string>
-            <key>com.apple.developer.applesignin</key>
-            <array>
-              <string>Default</string>
-            </array>
-            <key>com.apple.developer.team-identifier</key>
-            <string>ZS527A3WH2</string>
-            <key>get-task-allow</key>
-            <false/>
-          </dict>
-          </plist>
-          EOENT
-          echo "Injected entitlements:"; cat "$APP/archived-expanded-entitlements.xcent"
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
+            PROVISIONING_PROFILE_SPECIFIER="Wromble CI AppStore" \
+            DEVELOPMENT_TEAM=ZS527A3WH2 \
+            OTHER_CODE_SIGN_FLAGS="--keychain build.keychain"
 
       - name: Export signed IPA
         run: |
-          cat > ExportOptions.plist << 'EOXML'
+          cat > ExportOptions.plist << EOXML
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -128,19 +155,21 @@ jobs:
             <key>destination</key>
             <string>export</string>
             <key>signingStyle</key>
-            <string>automatic</string>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>$SIGN_IDENTITY</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>dk.wromble.app</key>
+              <string>Wromble CI AppStore</string>
+            </dict>
           </dict>
-          </plist>
           EOXML
 
           xcodebuild -exportArchive \
             -archivePath build/Wromble.xcarchive \
             -exportOptionsPlist ExportOptions.plist \
-            -exportPath build/ipa \
-            -authenticationKeyPath ~/private_keys/AuthKey_${API_KEY_ID}.p8 \
-            -authenticationKeyID ${API_KEY_ID} \
-            -authenticationKeyIssuerID ${API_ISSUER_ID} \
-            -allowProvisioningUpdates
+            -exportPath build/ipa
 
       - name: Verify push entitlement is in the IPA
         run: |
