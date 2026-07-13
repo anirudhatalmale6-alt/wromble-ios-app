@@ -84,6 +84,36 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
+      - name: Inject entitlements into archive
+        run: |
+          # An unsigned build never writes archived-expanded-entitlements.xcent,
+          # so the export re-sign has no idea the app wants aps-environment (push)
+          # or Sign in with Apple, and emits only the profile's default entitlements.
+          # Write that file ourselves from the real entitlements so automatic export
+          # signing requests push. (Push capability is already enabled on the App ID.)
+          APP="build/Wromble.xcarchive/Products/Applications/Wromble.app"
+          cat > "$APP/archived-expanded-entitlements.xcent" << 'EOENT'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>application-identifier</key>
+            <string>ZS527A3WH2.dk.wromble.app</string>
+            <key>aps-environment</key>
+            <string>production</string>
+            <key>com.apple.developer.applesignin</key>
+            <array>
+              <string>Default</string>
+            </array>
+            <key>com.apple.developer.team-identifier</key>
+            <string>ZS527A3WH2</string>
+            <key>get-task-allow</key>
+            <false/>
+          </dict>
+          </plist>
+          EOENT
+          echo "Injected entitlements:"; cat "$APP/archived-expanded-entitlements.xcent"
+
       - name: Export signed IPA
         run: |
           cat > ExportOptions.plist << 'EOXML'
