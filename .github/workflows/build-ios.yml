@@ -34,7 +34,7 @@ jobs:
           # the Developer portal. Previous builds shipped WITHOUT push because it was
           # never enabled, so devices could never obtain an APNs token. Enable it here
           # via the App Store Connect API using the same .p8 key CI already holds.
-          pip3 install --quiet pyjwt cryptography
+          pip3 install --quiet --break-system-packages pyjwt cryptography
           python3 - << 'PY'
           import jwt, time, json, os, urllib.request, urllib.error
           kid = os.environ['API_KEY_ID']; iss = os.environ['API_ISSUER_ID']
