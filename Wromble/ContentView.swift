@@ -1178,9 +1178,12 @@ struct CompanyOrder: Codable, Identifiable {
     let delivered: Bool
     let status: String
     let items: [CompanyOrderItem]
+    let date: Int?              // unix-tid da ordren blev afgivet
+    let wantedTime: String?     // oensket afhentnings-/leveringstid, tom = hurtigst muligt
     enum CodingKeys: String, CodingKey {
-        case id, customer, phone, address, amount, delivery, payment, table, status, items, delivered
+        case id, customer, phone, address, amount, delivery, payment, table, status, items, delivered, date
         case isNew = "is_new"
+        case wantedTime = "wanted_time"
     }
 }
 
@@ -1667,6 +1670,15 @@ struct CompanyOrdersView: View {
                 if order.table { chipTag("Bord", icon: "fork.knife") }
             }
 
+            // Tidspunkter: hvornaar ordren kom ind + hvornaar den oenskes klar
+            VStack(alignment: .leading, spacing: 4) {
+                if let ts = order.date, ts > 0 {
+                    Label(orderPlacedLabel(ts), systemImage: "clock").font(.caption).foregroundColor(.secondary)
+                }
+                Label(wantedTimeLabel(order), systemImage: order.delivery ? "bicycle" : "bag")
+                    .font(.caption.weight(.semibold)).foregroundColor(wrombleRed)
+            }
+
             if !order.customer.isEmpty {
                 Label(order.customer, systemImage: "person.fill").font(.subheadline)
             }
@@ -1727,6 +1739,24 @@ struct CompanyOrdersView: View {
         .foregroundColor(.secondary)
         .padding(.horizontal, 9).padding(.vertical, 5)
         .background(Color(.tertiarySystemBackground)).cornerRadius(8)
+    }
+
+    // "Bestilt kl. HH:mm" ud fra unix-tidspunktet ordren kom ind.
+    func orderPlacedLabel(_ ts: Int) -> String {
+        let d = Date(timeIntervalSince1970: TimeInterval(ts))
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "da_DK")
+        f.dateFormat = Calendar.current.isDateInToday(d) ? "'Bestilt kl.' HH:mm" : "'Bestilt' d/M 'kl.' HH:mm"
+        return f.string(from: d)
+    }
+
+    // Oensket tid: "Afhentes/Leveres kl. HH:mm" eller "hurtigst muligt".
+    func wantedTimeLabel(_ o: CompanyOrder) -> String {
+        let verb = o.delivery ? "Leveres" : "Afhentes"
+        if let w = o.wantedTime?.trimmingCharacters(in: .whitespaces), !w.isEmpty {
+            return "\(verb) \(w)"
+        }
+        return "\(verb) hurtigst muligt"
     }
 
     func load(showSpinner: Bool = true) async {
@@ -4555,6 +4585,9 @@ struct CartView: View {
     @State private var tipAmount: Double = 0
     @State private var customTip = ""
     @State private var tipCheckoutOpened = false
+    // Oensket tidspunkt for afhentning/levering (valgfrit - standard hurtigst muligt)
+    @State private var scheduleLater = false
+    @State private var wantedTime = Date()
     // Aabningstider for butikken i kurven - saa der ikke kan bestilles naar lukket
     @State private var hoursDays: [CompanyHourDay] = []
     @State private var shopStatus = ""
@@ -4643,6 +4676,25 @@ struct CartView: View {
                         Image(systemName: "bag.fill").foregroundColor(wrombleRed)
                         Text("Du henter selv hos restauranten").font(.subheadline).foregroundColor(.secondary)
                     }
+                }
+            }
+
+            // Hvornaar oensker kunden ordren? Standard = hurtigst muligt.
+            // Vaelges et tidspunkt, ser forretningen det direkte paa ordren.
+            Section(header: Text(isDelivery ? "Leveringstidspunkt" : "Afhentningstidspunkt")) {
+                Picker("", selection: $scheduleLater) {
+                    Text("Hurtigst muligt").tag(false)
+                    Text("Vaelg tid").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+
+                if scheduleLater {
+                    DatePicker(isDelivery ? "Leveres" : "Afhentes",
+                               selection: $wantedTime,
+                               in: Date()...,
+                               displayedComponents: [.date, .hourAndMinute])
+                        .environment(\.locale, Locale(identifier: "da_DK"))
                 }
             }
 
@@ -4891,6 +4943,15 @@ struct CartView: View {
         wrombleSyncPushToken()          // registrerer med det samme hvis token findes
     }
 
+    // Kundens oenskede tidspunkt som en paen dansk tekst. Tom = hurtigst muligt.
+    var wantedTimeLabel: String {
+        guard scheduleLater else { return "" }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "da_DK")
+        f.dateFormat = Calendar.current.isDateInToday(wantedTime) ? "'kl.' HH:mm" : "d/M 'kl.' HH:mm"
+        return f.string(from: wantedTime)
+    }
+
     func submitOrder(userId: Int) {
         isOrdering = true
         errorMessage = ""
@@ -4906,6 +4967,7 @@ struct CartView: View {
             "delivery_check": isDelivery ? 1 : 0,
             "payment_method": paymentMethod,
             "delivery_address": deliveryAddress,
+            "wanted_time": wantedTimeLabel,
             "items": cart.items.map { ["id": $0.id, "quantity": $0.quantity] as [String: Any] }
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
