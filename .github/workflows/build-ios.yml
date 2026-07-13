@@ -164,6 +164,7 @@ jobs:
               <string>Wromble CI AppStore</string>
             </dict>
           </dict>
+          </plist>
           EOXML
 
           xcodebuild -exportArchive \
