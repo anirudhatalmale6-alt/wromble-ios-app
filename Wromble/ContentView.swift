@@ -1353,6 +1353,70 @@ struct StaffToast: View {
     }
 }
 
+// Hoej, tydelig "ny ordre"-alarm. Bruger AVAudioSession .playback, saa den spiller
+// kraftigt - ogsaa selvom telefonen staar paa lydloes - naar app'en er aaben.
+// Lyden genereres i hukommelsen (ingen lydfil skal bundles i projektet).
+final class WrombleAlarm {
+    static let shared = WrombleAlarm()
+    private var player: AVAudioPlayer?
+    private var stopWork: DispatchWorkItem?
+
+    private func makeAlarmData() -> Data {
+        let sr = 44100.0
+        let tones: [Double] = [1046.5, 784.0]   // C6 / G5 skiftevis = alarm-agtigt
+        let beep = 0.18, gap = 0.06
+        var pcm = [Int16]()
+        for t in 0..<8 {                         // 8 bip pr. runde (~1.9 sek)
+            let f = tones[t % 2]
+            let bn = Int(sr * beep)
+            for k in 0..<bn {
+                let x = Double(k) / sr
+                let env = min(1.0, min(Double(k), Double(bn - k)) / (sr * 0.005)) // blid start/slut
+                let s = sin(2.0 * .pi * f * x) * env * 0.9
+                pcm.append(Int16(max(-1.0, min(1.0, s)) * 32767))
+            }
+            for _ in 0..<Int(sr * gap) { pcm.append(0) }
+        }
+        let dataSize = pcm.count * 2
+        var d = Data()
+        func le32(_ v: UInt32) { var x = v.littleEndian; withUnsafeBytes(of: &x) { d.append(contentsOf: $0) } }
+        func le16(_ v: UInt16) { var x = v.littleEndian; withUnsafeBytes(of: &x) { d.append(contentsOf: $0) } }
+        d.append(contentsOf: Array("RIFF".utf8)); le32(UInt32(36 + dataSize))
+        d.append(contentsOf: Array("WAVE".utf8))
+        d.append(contentsOf: Array("fmt ".utf8)); le32(16); le16(1); le16(1)
+        le32(UInt32(sr)); le32(UInt32(sr) * 2); le16(2); le16(16)
+        d.append(contentsOf: Array("data".utf8)); le32(UInt32(dataSize))
+        pcm.withUnsafeBufferPointer { d.append(Data(buffer: $0)) }
+        return d
+    }
+
+    func start(seconds: Double = 8) {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, options: [.duckOthers])
+            try AVAudioSession.sharedInstance().setActive(true)
+            if player == nil { player = try AVAudioPlayer(data: makeAlarmData()) }
+            guard let p = player else { return }
+            p.numberOfLoops = -1
+            p.volume = 1.0
+            p.prepareToPlay()
+            p.play()
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            stopWork?.cancel()
+            let w = DispatchWorkItem { [weak self] in self?.stop() }
+            stopWork = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: w)
+        } catch {
+            AudioServicesPlaySystemSound(1007)   // fallback
+        }
+    }
+
+    func stop() {
+        stopWork?.cancel(); stopWork = nil
+        player?.stop(); player?.currentTime = 0
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+}
+
 struct DriverDashboardView: View {
     let session: StaffSession
     @State private var orders: [DriverOrder] = []
@@ -1430,8 +1494,7 @@ struct DriverDashboardView: View {
 
     // Lyd + vibration naar en ny leverance er kommet ind mens siden er aaben.
     func alertNewOrder() {
-        AudioServicesPlaySystemSound(1007)
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        WrombleAlarm.shared.start()   // hoej alarm ved ny leverance
     }
 
     var headerCard: some View {
@@ -1756,8 +1819,7 @@ struct CompanyOrdersView: View {
 
     // Giver lyd + vibration naar en helt ny ordre er kommet ind mens siden er aaben.
     func alertNewOrder() {
-        AudioServicesPlaySystemSound(1007)   // kort notifikationslyd
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        WrombleAlarm.shared.start()   // hoej alarm ved ny ordre
     }
 
     func sectionHeader(_ title: String, count: Int) -> some View {
