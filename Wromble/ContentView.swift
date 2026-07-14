@@ -1150,11 +1150,13 @@ struct DriverOrder: Codable, Identifiable {
     let mine: Bool
     var orderTime: String = ""
     var deliverTime: String = ""
+    var dateLabel: String = ""
     var items: [CompanyOrderItem] = []
     enum CodingKeys: String, CodingKey {
         case id, customer, address, lat, lng, amount, company, delivery, mine, items
         case orderTime = "order_time"
         case deliverTime = "deliver_time"
+        case dateLabel = "date_label"
     }
 }
 
@@ -1352,21 +1354,40 @@ struct DriverDashboardView: View {
     @State private var knownOrderIds: Set<Int> = []
     @State private var didInitialLoad = false
     @State private var mapsOrder: DriverOrder?
+    @State private var tab = 0   // 0 = Aktive, 1 = Historik
+    @State private var history: [DriverOrder] = []
+    @State private var historyLoading = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
                 headerCard
-                if isLoading {
-                    ProgressView().scaleEffect(1.2).padding(.top, 50)
-                } else if orders.isEmpty {
-                    emptyState
+                Picker("", selection: $tab) {
+                    Text("Aktive").tag(0)
+                    Text("Historik").tag(1)
+                }
+                .pickerStyle(.segmented)
+                if tab == 0 {
+                    if isLoading {
+                        ProgressView().scaleEffect(1.2).padding(.top, 50)
+                    } else if orders.isEmpty {
+                        emptyState
+                    } else {
+                        ForEach(orders) { order in orderCard(order) }
+                    }
                 } else {
-                    ForEach(orders) { order in orderCard(order) }
+                    if historyLoading && history.isEmpty {
+                        ProgressView().scaleEffect(1.2).padding(.top, 50)
+                    } else if history.isEmpty {
+                        historyEmptyState
+                    } else {
+                        ForEach(history) { order in historyCard(order) }
+                    }
                 }
             }
             .padding(16)
         }
+        .task(id: tab) { if tab == 1 { await loadHistory() } }
         .navigationTitle("Chauffoer")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -1446,6 +1467,9 @@ struct DriverDashboardView: View {
             if !order.address.isEmpty {
                 Label(order.address, systemImage: "mappin.circle.fill").font(.subheadline).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            if !order.dateLabel.isEmpty {
+                Label(order.dateLabel, systemImage: "calendar").font(.caption).foregroundColor(.secondary)
             }
 
             // Hvornaar ordren skal leveres (og hvornaar den blev bestilt)
@@ -1540,6 +1564,59 @@ struct DriverDashboardView: View {
         }
     }
 
+    // Henter de leverede ordrer (historik) for denne chauffoer.
+    func loadHistory() async {
+        await MainActor.run { historyLoading = true }
+        guard let url = URL(string: "\(baseURL)/api/app-driver-history.php?rider_id=\(session.id)&company_id=\(session.companyId)") else {
+            await MainActor.run { historyLoading = false }; return
+        }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            struct Resp: Codable { let orders: [DriverOrder] }
+            let r = try JSONDecoder().decode(Resp.self, from: data)
+            await MainActor.run { history = r.orders; historyLoading = false }
+        } catch {
+            await MainActor.run { historyLoading = false }
+        }
+    }
+
+    func historyCard(_ order: DriverOrder) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Ordre #\(order.id)").font(.subheadline.bold())
+                Spacer()
+                Text("Leveret").font(.caption.weight(.bold)).foregroundColor(.green)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Color.green.opacity(0.12)).cornerRadius(8)
+            }
+            if !order.company.isEmpty {
+                Label(order.company, systemImage: "building.2.fill").font(.caption).foregroundColor(.secondary)
+            }
+            if !order.customer.isEmpty {
+                Label(order.customer, systemImage: "person.fill").font(.caption).foregroundColor(.secondary)
+            }
+            HStack {
+                if !order.dateLabel.isEmpty {
+                    Label(order.dateLabel, systemImage: "calendar").font(.caption).foregroundColor(.secondary)
+                }
+                Spacer()
+                Text(String(format: "%.0f kr", order.amount)).font(.subheadline.bold()).foregroundColor(wrombleRed)
+            }
+        }
+        .padding(14)
+        .background(Color(.secondarySystemBackground)).cornerRadius(14)
+    }
+
+    var historyEmptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "clock.arrow.circlepath").font(.system(size: 40)).foregroundColor(.secondary)
+            Text("Ingen leverede ordrer endnu").font(.headline)
+            Text("Naar du markerer en leverance som leveret, havner den her.")
+                .font(.subheadline).foregroundColor(.secondary).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity).padding(.top, 50).padding(.horizontal, 20)
+    }
+
     func deliver(_ order: DriverOrder) {
         actionId = order.id
         guard let url = URL(string: "\(baseURL)/api/app-driver-deliver.php") else { actionId = nil; return }
@@ -1553,6 +1630,7 @@ struct DriverDashboardView: View {
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     orders.removeAll { $0.id == order.id }
                     showToast("Ordre #\(order.id) leveret")
+                    Task { await loadHistory() }   // opdater historik med det samme
                 } else {
                     showToast("Kunne ikke opdatere ordren")
                 }
