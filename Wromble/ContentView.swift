@@ -1242,7 +1242,16 @@ func wrombleShopOpenState(_ days: [CompanyHourDay], shopStatus: String = "") -> 
 
     var open = false
     if !manualClosed, let t = today, !t.store_open.isEmpty, !t.store_close.isEmpty {
-        open = t.store_open <= now && now <= t.store_close
+        // Haandter lukketid efter midnat. Fx "aaben 11:00-00:00" eller "18:00-02:00":
+        // naar lukketiden er mindre end aabningstiden, gaar aabningen over midnat,
+        // og butikken er aaben hvis nu er efter aabning ELLER foer lukketid.
+        if t.store_open == t.store_close {
+            open = true   // fx 00:00-00:00 = aabent hele doegnet
+        } else if t.store_close < t.store_open {
+            open = now >= t.store_open || now <= t.store_close
+        } else {
+            open = now >= t.store_open && now <= t.store_close
+        }
     }
 
     var next: String? = nil
