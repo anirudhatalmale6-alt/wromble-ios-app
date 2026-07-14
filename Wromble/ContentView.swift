@@ -1582,6 +1582,41 @@ struct CompanyOrdersView: View {
     var newOrders: [CompanyOrder] { orders.filter { $0.isNew } }
     var activeOrders: [CompanyOrder] { orders.filter { !$0.isNew } }
 
+    // Historik grupperes pr. dag, saa ordrer og reservationer ligger paent
+    // sorteret under en dato-overskrift (nyeste dag oeverst).
+    struct OrderDayGroup: Identifiable {
+        let id: String
+        let title: String
+        let orders: [CompanyOrder]
+    }
+    var historyGroups: [OrderDayGroup] {
+        let sorted = orders.sorted { ($0.date ?? 0) > ($1.date ?? 0) }
+        let keyFmt = DateFormatter()
+        keyFmt.locale = Locale(identifier: "da_DK")
+        keyFmt.dateFormat = "yyyy-MM-dd"
+        var buckets: [String: [CompanyOrder]] = [:]
+        var order: [String] = []
+        for o in sorted {
+            let d = Date(timeIntervalSince1970: TimeInterval(o.date ?? 0))
+            let key = keyFmt.string(from: d)
+            if buckets[key] == nil { buckets[key] = []; order.append(key) }
+            buckets[key]?.append(o)
+        }
+        return order.map { key in
+            OrderDayGroup(id: key, title: dayTitle(buckets[key]?.first?.date ?? 0), orders: buckets[key] ?? [])
+        }
+    }
+    func dayTitle(_ ts: Int) -> String {
+        let cal = Calendar.current
+        let d = Date(timeIntervalSince1970: TimeInterval(ts))
+        if cal.isDateInToday(d) { return "I dag" }
+        if cal.isDateInYesterday(d) { return "I gaar" }
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "da_DK")
+        fmt.dateFormat = "d. MMMM yyyy"
+        return fmt.string(from: d)
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
@@ -1606,7 +1641,10 @@ struct CompanyOrdersView: View {
                         ForEach(activeOrders) { orderCard($0) }
                     }
                 } else {
-                    ForEach(orders) { orderCard($0) }
+                    ForEach(historyGroups) { group in
+                        sectionHeader(group.title, count: group.orders.count)
+                        ForEach(group.orders) { orderCard($0) }
+                    }
                 }
             }
             .padding(16)
@@ -5928,6 +5966,13 @@ struct ProfileView: View {
     @State private var showProfileEdit = false
     @State private var loggedInUser: UserProfile?
 
+    // Laeser version + build direkte fra bundlen, saa den altid matcher TestFlight
+    private var appVersionString: String {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        return "\(v) (\(b))"
+    }
+
     var body: some View {
         List {
             Section {
@@ -6082,7 +6127,7 @@ struct ProfileView: View {
                 HStack {
                     Label("Version", systemImage: "info.circle")
                     Spacer()
-                    Text("1.1.1 (33)").foregroundColor(.secondary)
+                    Text(appVersionString).foregroundColor(.secondary)
                 }
                 HStack {
                     Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
