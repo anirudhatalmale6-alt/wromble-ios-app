@@ -1183,10 +1183,14 @@ struct CompanyOrder: Codable, Identifiable {
     let date: Int?              // unix-tid da ordren blev afgivet
     let wantedTime: String?     // oensket afhentnings-/leveringstid, tom = hurtigst muligt
     let overdue: Bool?          // true naar den aftalte tid er passeret og ordren ikke er leveret
+    let etaText: String?        // live-ETA fra chaufføeren, fx "ca. 8 min." (tom hvis ukendt)
+    let riderName: String?      // navn paa chaufføeren der er paa vej
     enum CodingKeys: String, CodingKey {
         case id, customer, phone, address, amount, delivery, payment, table, status, items, delivered, date, overdue
         case isNew = "is_new"
         case wantedTime = "wanted_time"
+        case etaText = "eta_text"
+        case riderName = "rider_name"
     }
 }
 
@@ -1431,6 +1435,7 @@ struct DriverDashboardView: View {
     @State private var tab = 0   // 0 = Aktive, 1 = Historik
     @State private var history: [DriverOrder] = []
     @State private var historyLoading = false
+    @StateObject private var loc = LocationManager()   // live-position til tracking + ETA
 
     var body: some View {
         ScrollView {
@@ -1473,8 +1478,8 @@ struct DriverDashboardView: View {
         }
         .refreshable { await load() }
         .task { await load() }
-        .onAppear { startAutoRefresh() }
-        .onDisappear { refreshTimer?.invalidate(); refreshTimer = nil }
+        .onAppear { startAutoRefresh(); loc.startTracking() }
+        .onDisappear { refreshTimer?.invalidate(); refreshTimer = nil; loc.stopTracking() }
         .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
         .confirmationDialog("Naviger til kunden", isPresented: Binding(get: { mapsOrder != nil }, set: { if !$0 { mapsOrder = nil } }), titleVisibility: .visible) {
             if let o = mapsOrder {
@@ -1486,11 +1491,62 @@ struct DriverDashboardView: View {
     }
 
     // Henter leverance-listen hvert 5. sekund, saa nye leverancer dukker op af sig selv.
+    // Sender samtidig chaufføerens live-position, saa forretning + kunde kan se ETA.
     func startAutoRefresh() {
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
             Task { await load(showSpinner: false) }
+            postLocation()
         }
+    }
+
+    // Send chaufføerens position til serveren (kun naar der er aktive leverancer).
+    func postLocation() {
+        guard !orders.isEmpty, let l = loc.location else { return }
+        guard let url = URL(string: "\(baseURL)/api/driver-location.php") else { return }
+        var req = URLRequest(url: url); req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "rider_id": session.id,
+            "latitude": l.coordinate.latitude,
+            "longitude": l.coordinate.longitude
+        ])
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
+    // "Start levering": overtag ordren + begynd tracking, saa kunden faar besked og ETA.
+    func take(_ order: DriverOrder) {
+        actionId = order.id
+        guard let url = URL(string: "\(baseURL)/api/app-driver-take.php") else { actionId = nil; return }
+        var req = URLRequest(url: url); req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "rider_id": session.id, "company_id": session.companyId, "order_id": order.id
+        ])
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            DispatchQueue.main.async {
+                actionId = nil
+                if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any], j["success"] as? Bool == true {
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    loc.startTracking(); postLocation()
+                    showToast("Du er paa vej med ordre #\(order.id)")
+                    Task { await load() }
+                } else {
+                    showToast("Kunne ikke starte leveringen")
+                }
+            }
+        }.resume()
+    }
+
+    // Afstand + ETA fra chaufføerens live-position til kunden. Tom hvis ukendt.
+    func etaLabel(_ order: DriverOrder) -> String {
+        guard let l = loc.location, order.lat != 0 || order.lng != 0 else { return "" }
+        let dest = CLLocation(latitude: order.lat, longitude: order.lng)
+        let meters = dest.distance(from: l)
+        let km = meters / 1000.0
+        var minutes = Int(ceil((km / 25.0) * 60.0)) + 2
+        if minutes < 2 { minutes = 2 }
+        return String(format: "%.1f km · ca. %d min. til kunden", km, minutes)
     }
 
     // Lyd + vibration naar en ny leverance er kommet ind mens siden er aaben.
@@ -1558,6 +1614,15 @@ struct DriverDashboardView: View {
                 }
             }
 
+            // Live-ETA fra chaufføerens position til kunden (kun naar chaufføeren er paa vej)
+            if order.mine {
+                let eta = etaLabel(order)
+                if !eta.isEmpty {
+                    Label(eta, systemImage: "location.north.line.fill")
+                        .font(.caption.weight(.semibold)).foregroundColor(.blue)
+                }
+            }
+
             // Hvad der er bestilt - saa chaufføren kan se ordren med sig
             if !order.items.isEmpty {
                 Divider()
@@ -1580,15 +1645,27 @@ struct DriverDashboardView: View {
                             .background(wrombleRed.opacity(0.10)).cornerRadius(10)
                     }
                 }
-                Button(action: { deliver(order) }) {
-                    Group {
-                        if actionId == order.id { ProgressView().tint(.white) }
-                        else { Label("Marker leveret", systemImage: "checkmark") .font(.subheadline.weight(.bold)) }
+                if order.mine {
+                    Button(action: { deliver(order) }) {
+                        Group {
+                            if actionId == order.id { ProgressView().tint(.white) }
+                            else { Label("Marker leveret", systemImage: "checkmark") .font(.subheadline.weight(.bold)) }
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 11)
+                        .foregroundColor(.white).background(Color.green).cornerRadius(10)
                     }
-                    .frame(maxWidth: .infinity).padding(.vertical, 11)
-                    .foregroundColor(.white).background(Color.green).cornerRadius(10)
+                    .disabled(actionId != nil)
+                } else {
+                    Button(action: { take(order) }) {
+                        Group {
+                            if actionId == order.id { ProgressView().tint(.white) }
+                            else { Label("Start levering", systemImage: "bicycle") .font(.subheadline.weight(.bold)) }
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 11)
+                        .foregroundColor(.white).background(wrombleRed).cornerRadius(10)
+                    }
+                    .disabled(actionId != nil)
                 }
-                .disabled(actionId != nil)
             }
         }
         .padding(16)
@@ -1886,6 +1963,11 @@ struct CompanyOrdersView: View {
                         .font(.caption.weight(.bold)).foregroundColor(.white)
                         .padding(.horizontal, 8).padding(.vertical, 4)
                         .background(Color.red).cornerRadius(8)
+                }
+                if let eta = order.etaText, !eta.isEmpty {
+                    let who = (order.riderName?.isEmpty == false) ? "\(order.riderName!) er " : "Chauffoer "
+                    Label("\(who)paa vej – \(eta)", systemImage: "bicycle")
+                        .font(.caption.weight(.semibold)).foregroundColor(.blue)
                 }
             }
 
@@ -6589,6 +6671,18 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     func requestLocation() {
         manager.requestWhenInUseAuthorization()
         manager.requestLocation()
+    }
+
+    // Loebende opdatering af positionen (bruges af chauffoer-dashboardet til live-tracking).
+    func startTracking() {
+        manager.requestWhenInUseAuthorization()
+        manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        manager.distanceFilter = 25 // meter mellem opdateringer
+        manager.startUpdatingLocation()
+    }
+
+    func stopTracking() {
+        manager.stopUpdatingLocation()
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
