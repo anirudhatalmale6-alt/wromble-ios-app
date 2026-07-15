@@ -1182,8 +1182,9 @@ struct CompanyOrder: Codable, Identifiable {
     let items: [CompanyOrderItem]
     let date: Int?              // unix-tid da ordren blev afgivet
     let wantedTime: String?     // oensket afhentnings-/leveringstid, tom = hurtigst muligt
+    let overdue: Bool?          // true naar den aftalte tid er passeret og ordren ikke er leveret
     enum CodingKeys: String, CodingKey {
-        case id, customer, phone, address, amount, delivery, payment, table, status, items, delivered, date
+        case id, customer, phone, address, amount, delivery, payment, table, status, items, delivered, date, overdue
         case isNew = "is_new"
         case wantedTime = "wanted_time"
     }
@@ -1727,6 +1728,7 @@ struct CompanyOrdersView: View {
     @State private var tab = 0   // 0 = Aktive, 1 = Historik
     @State private var refreshTimer: Timer?
     @State private var knownOrderIds: Set<Int> = []
+    @State private var knownOverdueIds: Set<Int> = []
     @State private var didInitialLoad = false
 
     var newOrders: [CompanyOrder] { orders.filter { $0.isNew } }
@@ -1822,6 +1824,21 @@ struct CompanyOrdersView: View {
         WrombleAlarm.shared.start()   // hoej alarm ved ny ordre
     }
 
+    // Notifikation + besked til forretningen naar en leverance er forsinket.
+    func alertOverdue(_ ids: [Int]) {
+        let list = ids.map { "#\($0)" }.joined(separator: ", ")
+        let content = UNMutableNotificationContent()
+        content.title = "Ordre forsinket"
+        content.body  = ids.count == 1
+            ? "Ordre \(list) er ikke leveret til den aftalte tid."
+            : "Ordrerne \(list) er ikke leveret til den aftalte tid."
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: "overdue-\(list)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        showToast("Forsinket: ordre \(list) er ikke leveret til tiden")
+    }
+
     func sectionHeader(_ title: String, count: Int) -> some View {
         HStack {
             Text(title).font(.title3.bold())
@@ -1864,6 +1881,12 @@ struct CompanyOrdersView: View {
                 }
                 Label(wantedTimeLabel(order), systemImage: order.delivery ? "bicycle" : "bag")
                     .font(.caption.weight(.semibold)).foregroundColor(wrombleRed)
+                if order.overdue == true {
+                    Label("FORSINKET – ikke leveret til tiden", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption.weight(.bold)).foregroundColor(.white)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Color.red).cornerRadius(8)
+                }
             }
 
             if !order.customer.isEmpty {
@@ -1961,6 +1984,12 @@ struct CompanyOrdersView: View {
                     let fresh = incomingNew.subtracting(knownOrderIds)
                     if didInitialLoad && !fresh.isEmpty { alertNewOrder() }
                     knownOrderIds = incomingNew
+
+                    // Opdag forsinkede leverancer (aftalt tid passeret, ikke leveret)
+                    let incomingOverdue = Set(r.orders.filter { $0.overdue == true }.map { $0.id })
+                    let freshOverdue = incomingOverdue.subtracting(knownOverdueIds)
+                    if didInitialLoad && !freshOverdue.isEmpty { alertOverdue(Array(freshOverdue).sorted()) }
+                    knownOverdueIds = incomingOverdue
                 }
                 orders = r.orders
                 isLoading = false
@@ -4773,8 +4802,11 @@ struct CartView: View {
     @State private var customTip = ""
     @State private var tipCheckoutOpened = false
     // Oensket tidspunkt for afhentning/levering (valgfrit - standard hurtigst muligt)
+    // Hurtigst mulige tid er altid mindst 1 time frem, saa chaufføeren/køekkenet har tid.
     @State private var scheduleLater = false
-    @State private var wantedTime = Date()
+    @State private var wantedTime = Date().addingTimeInterval(60 * 60)
+    // Tidligst mulige bestillingstidspunkt: altid mindst 1 time fra nu.
+    private var earliestOrderTime: Date { Date().addingTimeInterval(60 * 60) }
     // Aabningstider for butikken i kurven - saa der ikke kan bestilles naar lukket
     @State private var hoursDays: [CompanyHourDay] = []
     @State private var shopStatus = ""
@@ -4870,18 +4902,24 @@ struct CartView: View {
             // Vaelges et tidspunkt, ser forretningen det direkte paa ordren.
             Section(header: Text(isDelivery ? "Leveringstidspunkt" : "Afhentningstidspunkt")) {
                 Picker("", selection: $scheduleLater) {
-                    Text("Hurtigst muligt").tag(false)
+                    Text("Hurtigst muligt (ca. 1 time)").tag(false)
                     Text("Vaelg tid").tag(true)
                 }
                 .pickerStyle(.segmented)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                .onChange(of: scheduleLater) { later in
+                    // Naar kunden vaelger et tidspunkt, saet minimum til 1 time frem.
+                    if later && wantedTime < earliestOrderTime { wantedTime = earliestOrderTime }
+                }
 
                 if scheduleLater {
                     DatePicker(isDelivery ? "Leveres" : "Afhentes",
                                selection: $wantedTime,
-                               in: Date()...,
+                               in: earliestOrderTime...,
                                displayedComponents: [.date, .hourAndMinute])
                         .environment(\.locale, Locale(identifier: "da_DK"))
+                    Text("Tidligst mulige tid er 1 time fra nu.")
+                        .font(.caption2).foregroundColor(.secondary)
                 }
             }
 
@@ -5155,6 +5193,8 @@ struct CartView: View {
             "payment_method": paymentMethod,
             "delivery_address": deliveryAddress,
             "wanted_time": wantedTimeLabel,
+            // Oensket tid som unix-tid (0 = hurtigst muligt). Serveren haandhaever mindst 1 time frem.
+            "wanted_ts": scheduleLater ? Int(wantedTime.timeIntervalSince1970) : 0,
             "items": cart.items.map { ["id": $0.id, "quantity": $0.quantity] as [String: Any] }
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
