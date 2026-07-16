@@ -1148,12 +1148,13 @@ struct DriverOrder: Codable, Identifiable {
     let company: String
     let delivery: Bool
     let mine: Bool
+    var failed: Bool = false
     var orderTime: String = ""
     var deliverTime: String = ""
     var dateLabel: String = ""
     var items: [CompanyOrderItem] = []
     enum CodingKeys: String, CodingKey {
-        case id, customer, address, lat, lng, amount, company, delivery, mine, items
+        case id, customer, address, lat, lng, amount, company, delivery, mine, failed, items
         case orderTime = "order_time"
         case deliverTime = "deliver_time"
         case dateLabel = "date_label"
@@ -1717,7 +1718,7 @@ struct DriverDashboardView: View {
     // Henter de leverede ordrer (historik) for denne chauffoer.
     func loadHistory() async {
         await MainActor.run { historyLoading = true }
-        guard let url = URL(string: "\(baseURL)/api/app-driver-history.php?rider_id=\(session.id)&company_id=\(session.companyId)") else {
+        guard let url = URL(string: "\(baseURL)/api/app-driver-history.php?rider_id=\(session.id)&company_id=\(session.companyId)&include_failed=1") else {
             await MainActor.run { historyLoading = false }; return
         }
         do {
@@ -1735,9 +1736,15 @@ struct DriverDashboardView: View {
             HStack {
                 Text("Ordre #\(order.id)").font(.subheadline.bold())
                 Spacer()
-                Text("Leveret").font(.caption.weight(.bold)).foregroundColor(.green)
-                    .padding(.horizontal, 10).padding(.vertical, 4)
-                    .background(Color.green.opacity(0.12)).cornerRadius(8)
+                if order.failed {
+                    Text("Levering mislykkedes").font(.caption.weight(.bold)).foregroundColor(wrombleRed)
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(wrombleRed.opacity(0.12)).cornerRadius(8)
+                } else {
+                    Text("Leveret").font(.caption.weight(.bold)).foregroundColor(.green)
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(Color.green.opacity(0.12)).cornerRadius(8)
+                }
             }
             if !order.company.isEmpty {
                 Label(order.company, systemImage: "building.2.fill").font(.caption).foregroundColor(.secondary)
@@ -2011,6 +2018,12 @@ struct CompanyOrdersView: View {
                     .disabled(actionId != nil)
                 }
                 .padding(.top, 2)
+            } else if order.status == "mislykket_levering" {
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.octagon.fill").foregroundColor(wrombleRed)
+                    Text("Levering mislykkedes").font(.subheadline.weight(.semibold)).foregroundColor(wrombleRed)
+                }
+                .padding(.top, 2)
             } else {
                 HStack(spacing: 6) {
                     Image(systemName: order.delivered ? "checkmark.circle.fill" : "checkmark.seal.fill").foregroundColor(.green)
@@ -2054,7 +2067,7 @@ struct CompanyOrdersView: View {
     func load(showSpinner: Bool = true) async {
         if showSpinner { await MainActor.run { isLoading = true } }
         let scope = tab == 1 ? "history" : "active"
-        guard let url = URL(string: "\(baseURL)/api/app-company-orders.php?company_id=\(session.companyId)&scope=\(scope)") else { return }
+        guard let url = URL(string: "\(baseURL)/api/app-company-orders.php?company_id=\(session.companyId)&scope=\(scope)&include_failed=1") else { return }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             struct Resp: Codable { let orders: [CompanyOrder] }
