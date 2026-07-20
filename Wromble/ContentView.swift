@@ -1737,7 +1737,7 @@ struct DriverDashboardView: View {
                 Text("Ordre #\(order.id)").font(.subheadline.bold())
                 Spacer()
                 if order.failed {
-                    Text("Levering mislykkedes").font(.caption.weight(.bold)).foregroundColor(wrombleRed)
+                    Text("Ikke leveret").font(.caption.weight(.bold)).foregroundColor(wrombleRed)
                         .padding(.horizontal, 10).padding(.vertical, 4)
                         .background(wrombleRed.opacity(0.12)).cornerRadius(8)
                 } else {
@@ -2021,7 +2021,7 @@ struct CompanyOrdersView: View {
             } else if order.status == "mislykket_levering" {
                 HStack(spacing: 6) {
                     Image(systemName: "xmark.octagon.fill").foregroundColor(wrombleRed)
-                    Text("Levering mislykkedes").font(.subheadline.weight(.semibold)).foregroundColor(wrombleRed)
+                    Text("Ikke leveret").font(.subheadline.weight(.semibold)).foregroundColor(wrombleRed)
                 }
                 .padding(.top, 2)
             } else {
