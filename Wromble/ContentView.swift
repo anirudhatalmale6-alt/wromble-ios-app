@@ -161,6 +161,9 @@ struct MenuItem: Identifiable, Codable {
     let price: Double
     let image: String?
     let extra_images: [String]?
+    // Aldersgraense: 0/nil = ingen, ellers 16 eller 18 aar (alkohol, tobak mv.)
+    let age_limit: Int?
+    var ageLimit: Int { age_limit ?? 0 }
 }
 
 struct CartItem: Identifiable {
@@ -168,6 +171,16 @@ struct CartItem: Identifiable {
     let name: String
     let price: Double
     var quantity: Int
+}
+
+// Lille roedt "18+"/"16+"-maerke til aldersbegraensede varer.
+func ageBadge(_ age: Int) -> some View {
+    Text("\(age)+")
+        .font(.caption2.weight(.heavy))
+        .foregroundColor(.white)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(wrombleRed)
+        .clipShape(Capsule())
 }
 
 struct Order: Identifiable {
@@ -2446,6 +2459,7 @@ struct MenuItemEdit: Identifiable {
     var headline: String
     var description: String
     var price: String
+    var ageLimit: Int = 0
 }
 
 struct CompanyMenuView: View {
@@ -2522,11 +2536,14 @@ struct CompanyMenuView: View {
                 Button(action: {
                     editing = MenuItemEdit(id: "\(item.id)", itemId: item.id, catId: cat.id,
                                            headline: item.name, description: item.description ?? "",
-                                           price: String(format: "%.0f", item.price))
+                                           price: String(format: "%.0f", item.price), ageLimit: item.ageLimit)
                 }) {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.name).font(.subheadline.weight(.semibold)).foregroundColor(.primary)
+                            HStack(spacing: 6) {
+                                Text(item.name).font(.subheadline.weight(.semibold)).foregroundColor(.primary)
+                                if item.ageLimit > 0 { ageBadge(item.ageLimit) }
+                            }
                             if let d = item.description, !d.isEmpty {
                                 Text(d).font(.caption).foregroundColor(.secondary).lineLimit(1)
                             }
@@ -2592,6 +2609,7 @@ struct MenuItemEditorView: View {
     @State private var headline: String
     @State private var description: String
     @State private var price: String
+    @State private var ageLimit: Int
     @State private var isSaving = false
     @State private var errorMessage = ""
 
@@ -2602,6 +2620,7 @@ struct MenuItemEditorView: View {
         _headline = State(initialValue: edit.headline)
         _description = State(initialValue: edit.description)
         _price = State(initialValue: edit.price)
+        _ageLimit = State(initialValue: edit.ageLimit)
     }
 
     var body: some View {
@@ -2614,6 +2633,15 @@ struct MenuItemEditorView: View {
                         TextField("Pris", text: $price).keyboardType(.decimalPad)
                         Text("kr").foregroundColor(.secondary)
                     }
+                }
+                Section(header: Text("Aldersgraense"),
+                        footer: Text("Vaelg en aldersgraense for alkohol, tobak mv. Billedet sloeres for kunden, indtil kunden bekraefter sin alder.")) {
+                    Picker("Aldersgraense", selection: $ageLimit) {
+                        Text("Ingen").tag(0)
+                        Text("16 aar").tag(16)
+                        Text("18 aar").tag(18)
+                    }
+                    .pickerStyle(.segmented)
                 }
                 if !errorMessage.isEmpty {
                     Text(errorMessage).foregroundColor(.red).font(.subheadline)
@@ -2644,7 +2672,8 @@ struct MenuItemEditorView: View {
         isSaving = true; errorMessage = ""
         var payload: [String: Any] = ["company_id": session.companyId, "action": "save",
                                       "cat_id": edit.catId, "headline": headline,
-                                      "description": description, "price": Double(price.replacingOccurrences(of: ",", with: ".")) ?? 0]
+                                      "description": description, "price": Double(price.replacingOccurrences(of: ",", with: ".")) ?? 0,
+                                      "age_limit": ageLimit]
         if edit.itemId > 0 { payload["id"] = edit.itemId }
         postJSON("app-menu-item.php", payload) { ok, err in
             isSaving = false
@@ -4819,18 +4848,31 @@ struct MenuItemRow: View {
     var onAdd: () -> Void
     @ObservedObject var cart: CartManager = .shared
     @Environment(\.horizontalSizeClass) var sizeClass
+    // Hoejeste alder kunden har bekraeftet (0/16/18). Gemmes paa enheden.
+    @AppStorage("wrombleAgeConfirmed") private var confirmedAge = 0
+    @State private var showAgeGate = false
 
     var quantityInCart: Int {
         cart.items.first(where: { $0.id == item.id })?.quantity ?? 0
     }
+    // Varen er laast (billede sloeret, kan ikke laegges i kurv) indtil kunden
+    // bekraefter sin alder.
+    var isLocked: Bool { item.ageLimit > 0 && confirmedAge < item.ageLimit }
+    var imgSide: CGFloat { sizeClass == .regular ? 80 : 64 }
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(item.name)
-                    .font(sizeClass == .regular ? .body.weight(.semibold) : .subheadline.weight(.semibold))
-                    .foregroundColor(.primary)
-                if let desc = item.description, !desc.isEmpty {
+                HStack(spacing: 6) {
+                    Text(item.name)
+                        .font(sizeClass == .regular ? .body.weight(.semibold) : .subheadline.weight(.semibold))
+                        .foregroundColor(.primary)
+                    if item.ageLimit > 0 { ageBadge(item.ageLimit) }
+                }
+                if isLocked {
+                    Text("Aldersgraense \(item.ageLimit) aar - bekraeft din alder")
+                        .font(.caption).foregroundColor(.secondary).lineLimit(2)
+                } else if let desc = item.description, !desc.isEmpty {
                     Text(desc).font(.caption).foregroundColor(.secondary).lineLimit(2)
                 }
                 Text(String(format: "%.2f kr", item.price))
@@ -4840,18 +4882,34 @@ struct MenuItemRow: View {
             Spacer()
 
             if let img = item.image, !img.isEmpty {
-                CachedAsyncImage(url: wrombleImageURL(img)) { phase in
-                    switch phase {
-                    case .success(let image): image.resizable().scaledToFill()
-                    default: Color(.tertiarySystemBackground)
+                ZStack {
+                    CachedAsyncImage(url: wrombleImageURL(img)) { phase in
+                        switch phase {
+                        case .success(let image): image.resizable().scaledToFill()
+                        default: Color(.tertiarySystemBackground)
+                        }
+                    }
+                    .frame(width: imgSide, height: imgSide)
+                    .cornerRadius(10).clipped()
+                    .blur(radius: isLocked ? 14 : 0)
+
+                    if isLocked {
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.black.opacity(0.45))
+                            .frame(width: imgSide, height: imgSide)
+                        VStack(spacing: 2) {
+                            Image(systemName: "lock.fill").font(.subheadline).foregroundColor(.white)
+                            Text("\(item.ageLimit)+").font(.caption2.weight(.heavy)).foregroundColor(.white)
+                        }
                     }
                 }
-                .frame(width: sizeClass == .regular ? 80 : 64, height: sizeClass == .regular ? 80 : 64)
-                .cornerRadius(10).clipped()
+                .frame(width: imgSide, height: imgSide)
+                .contentShape(Rectangle())
+                .onTapGesture { if isLocked { showAgeGate = true } }
             }
 
-            Button(action: onAdd) {
-                if quantityInCart > 0 {
+            Button(action: { if isLocked { showAgeGate = true } else { onAdd() } }) {
+                if quantityInCart > 0 && !isLocked {
                     HStack(spacing: 6) {
                         Button(action: { cart.removeItem(item.id) }) {
                             Image(systemName: "minus.circle.fill").font(.title3).foregroundColor(.secondary)
@@ -4864,7 +4922,8 @@ struct MenuItemRow: View {
                         Image(systemName: "plus.circle.fill").font(.title3).foregroundColor(wrombleRed)
                     }
                 } else {
-                    Image(systemName: "plus.circle.fill").font(.title2).foregroundColor(wrombleRed)
+                    Image(systemName: isLocked ? "lock.fill" : "plus.circle.fill")
+                        .font(.title2).foregroundColor(isLocked ? .secondary : wrombleRed)
                 }
             }
             .buttonStyle(.borderless)
@@ -4872,6 +4931,15 @@ struct MenuItemRow: View {
         .padding(12)
         .background(Color(.secondarySystemBackground))
         .cornerRadius(12)
+        .confirmationDialog("Aldersbekraeftelse",
+                            isPresented: $showAgeGate, titleVisibility: .visible) {
+            Button("Ja, jeg er fyldt \(item.ageLimit) aar") {
+                if item.ageLimit > confirmedAge { confirmedAge = item.ageLimit }
+            }
+            Button("Nej", role: .cancel) {}
+        } message: {
+            Text("Denne vare har en aldersgraense paa \(item.ageLimit) aar. Bekraeft at du er fyldt \(item.ageLimit) aar for at se og bestille varen.")
+        }
     }
 }
 
