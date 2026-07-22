@@ -5225,7 +5225,31 @@ struct CartView: View {
             let savedName = UserDefaults.standard.string(forKey: "loggedInUserName") ?? ""
             let savedEmail = UserDefaults.standard.string(forKey: "loggedInUserEmail") ?? ""
             loggedInUser = UserProfile(id: savedId, name: savedName, email: savedEmail, phone: nil, type: "customer")
+            prefillDeliveryAddress(userId: savedId)
         }
+    }
+
+    // En logget-ind bruger skal ikke skrive sin adresse igen ved hver bestilling.
+    // Henter den gemte leveringsadresse fra profilen og udfylder feltet automatisk.
+    // Overskriver ALDRIG noget kunden selv har tastet.
+    func prefillDeliveryAddress(userId: Int) {
+        guard let url = URL(string: "\(baseURL)/api/app-user-profile.php?user_id=\(userId)") else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            guard let data = data else { return }
+            struct Resp: Codable { let profile: CustomerProfileData }
+            guard let r = try? JSONDecoder().decode(Resp.self, from: data) else { return }
+            let p = r.profile
+            let street = p.adress.trimmingCharacters(in: .whitespaces)
+            let cityLine = [p.zipcode.trimmingCharacters(in: .whitespaces),
+                            p.city.trimmingCharacters(in: .whitespaces)]
+                .filter { !$0.isEmpty }.joined(separator: " ")
+            let full = [street, cityLine].filter { !$0.isEmpty }.joined(separator: ", ")
+            DispatchQueue.main.async {
+                if deliveryAddress.trimmingCharacters(in: .whitespaces).isEmpty && !full.isEmpty {
+                    deliveryAddress = full
+                }
+            }
+        }.resume()
     }
 
     func placeOrder() {
