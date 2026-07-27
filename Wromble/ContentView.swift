@@ -3202,6 +3202,176 @@ struct JobApplyView: View {
 
 // MARK: - Kunde-profil (rediger egne oplysninger)
 
+// MARK: - Dansk adresse-autocomplete (DAWA / Dataforsyningen)
+// Officielt dansk adresseregister. Gratis, ingen nøgle. Når kunden skriver sin
+// adresse, henter vi forslag og udfylder postnr + by automatisk.
+struct DawaSuggestion: Identifiable {
+    let id = UUID()
+    let tekst: String        // fx "Ballerupvej 12, 2750 Ballerup"
+    let vejnavn: String
+    let husnr: String
+    let postnr: String
+    let postnrnavn: String
+    var adresse: String { [vejnavn, husnr].filter { !$0.isEmpty }.joined(separator: " ") }
+}
+
+enum DawaService {
+    // Adresse-forslag ud fra det kunden har skrevet.
+    static func autocomplete(_ query: String) async -> [DawaSuggestion] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 2,
+              var comps = URLComponents(string: "https://api.dataforsyningen.dk/adgangsadresser/autocomplete")
+        else { return [] }
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: q),
+            URLQueryItem(name: "per_side", value: "6"),
+            URLQueryItem(name: "fuzzy", value: "")
+        ]
+        guard let url = comps.url else { return [] }
+        do {
+            let (data, resp) = try await URLSession.shared.data(from: url)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200,
+                  let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+            else { return [] }
+            return arr.compactMap { obj in
+                let tekst = obj["tekst"] as? String ?? ""
+                if tekst.isEmpty { return nil }
+                let a = obj["adgangsadresse"] as? [String: Any] ?? [:]
+                return DawaSuggestion(
+                    tekst: tekst,
+                    vejnavn: a["vejnavn"] as? String ?? "",
+                    husnr: a["husnr"] as? String ?? "",
+                    postnr: a["postnr"] as? String ?? "",
+                    postnrnavn: a["postnrnavn"] as? String ?? ""
+                )
+            }
+        } catch { return [] }
+    }
+
+    // Slå bynavn op ud fra et 4-cifret postnummer.
+    static func cityFor(postnr: String) async -> String? {
+        let nr = postnr.trimmingCharacters(in: .whitespaces)
+        guard nr.count == 4, Int(nr) != nil,
+              let url = URL(string: "https://api.dataforsyningen.dk/postnumre/\(nr)")
+        else { return nil }
+        do {
+            let (data, resp) = try await URLSession.shared.data(from: url)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200,
+                  let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return nil }
+            return obj["navn"] as? String
+        } catch { return nil }
+    }
+}
+
+// Struktureret adresse (Adresse + Postnr + By) med forslag og auto-udfyldning.
+struct DanishAddressFields: View {
+    @Binding var adress: String
+    @Binding var zipcode: String
+    @Binding var city: String
+
+    @State private var suggestions: [DawaSuggestion] = []
+    @State private var lastSelected = ""
+    @State private var searchTask: Task<Void, Never>?
+    @FocusState private var addressFocused: Bool
+
+    var body: some View {
+        TextField("Adresse", text: $adress)
+            .autocorrectionDisabled(true)
+            .focused($addressFocused)
+            .onChange(of: adress) { newValue in
+                guard addressFocused, newValue != lastSelected else { return }
+                searchTask?.cancel()
+                searchTask = Task {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    if Task.isCancelled { return }
+                    let res = await DawaService.autocomplete(newValue)
+                    if Task.isCancelled { return }
+                    await MainActor.run { suggestions = res }
+                }
+            }
+        ForEach(suggestions) { s in
+            Button {
+                lastSelected = s.adresse
+                adress = s.adresse
+                zipcode = s.postnr
+                city = s.postnrnavn
+                suggestions = []
+                addressFocused = false
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "mappin.circle.fill").foregroundColor(wrombleRed)
+                    Text(s.tekst).font(.subheadline).foregroundColor(.primary)
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+        }
+        HStack {
+            TextField("Postnr.", text: $zipcode)
+                .keyboardType(.numberPad)
+                .frame(width: 90)
+                .onChange(of: zipcode) { newValue in
+                    let digits = newValue.filter { $0.isNumber }
+                    guard digits.count == 4 else { return }
+                    Task {
+                        if let by = await DawaService.cityFor(postnr: digits) {
+                            await MainActor.run { if by != city { city = by } }
+                        }
+                    }
+                }
+            Divider()
+            TextField("By", text: $city)
+        }
+    }
+}
+
+// Enkelt adressefelt med forslag (bruges i kurven).
+struct DanishAddressField: View {
+    @Binding var text: String
+    var placeholder: String = "Leveringsadresse"
+
+    @State private var suggestions: [DawaSuggestion] = []
+    @State private var lastSelected = ""
+    @State private var searchTask: Task<Void, Never>?
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "mappin.and.ellipse").foregroundColor(wrombleRed)
+            TextField(placeholder, text: $text)
+                .autocorrectionDisabled(true)
+                .focused($focused)
+                .onChange(of: text) { newValue in
+                    guard focused, newValue != lastSelected else { return }
+                    searchTask?.cancel()
+                    searchTask = Task {
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                        if Task.isCancelled { return }
+                        let res = await DawaService.autocomplete(newValue)
+                        if Task.isCancelled { return }
+                        await MainActor.run { suggestions = res }
+                    }
+                }
+        }
+        ForEach(suggestions) { s in
+            Button {
+                lastSelected = s.tekst
+                text = s.tekst
+                suggestions = []
+                focused = false
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "mappin.circle.fill").foregroundColor(wrombleRed)
+                    Text(s.tekst).font(.subheadline).foregroundColor(.primary)
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
 struct CustomerProfileView: View {
     let userId: Int
     @Environment(\.dismiss) var dismiss
@@ -3226,12 +3396,9 @@ struct CustomerProfileView: View {
                         TextField("Fornavn", text: $firstname)
                         TextField("Efternavn", text: $lastname)
                     }
-                    Section(header: Text("Leveringsadresse")) {
-                        TextField("Adresse", text: $adress)
-                        HStack {
-                            TextField("Postnr.", text: $zipcode).keyboardType(.numberPad).frame(width: 90)
-                            TextField("By", text: $city)
-                        }
+                    Section(header: Text("Leveringsadresse"),
+                            footer: Text("Skriv din adresse og vælg fra listen – så udfyldes postnummer og by automatisk.")) {
+                        DanishAddressFields(adress: $adress, zipcode: $zipcode, city: $city)
                     }
                     Section(header: Text("Kontakt")) {
                         TextField("Telefon", text: $phone).keyboardType(.phonePad)
@@ -5049,10 +5216,7 @@ struct CartView: View {
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
 
                 if isDelivery {
-                    HStack(spacing: 8) {
-                        Image(systemName: "mappin.and.ellipse").foregroundColor(wrombleRed)
-                        TextField("Leveringsadresse", text: $deliveryAddress)
-                    }
+                    DanishAddressField(text: $deliveryAddress)
                 } else {
                     HStack(spacing: 8) {
                         Image(systemName: "bag.fill").foregroundColor(wrombleRed)
@@ -5327,7 +5491,7 @@ struct CartView: View {
             return
         }
         if isDelivery && deliveryAddress.trimmingCharacters(in: .whitespaces).isEmpty {
-            errorMessage = "Indtast en leveringsadresse, eller vaelg afhentning."
+            errorMessage = "Indtast en leveringsadresse, eller vælg afhentning."
             return
         }
         guard let user = loggedInUser, user.id > 0 else {
