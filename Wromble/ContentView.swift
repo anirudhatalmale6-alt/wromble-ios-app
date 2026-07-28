@@ -2088,7 +2088,10 @@ struct CompanyOrdersView: View {
             await MainActor.run {
                 // Opdag helt nye ordrer (kun paa Aktive-fanen) og giv lyd + vibration
                 if tab == 0 {
-                    let incomingNew = Set(r.orders.filter { $0.isNew }.map { $0.id })
+                    // Alarmér ved ENHVER ny ordre i aktiv-listen - ogsaa auto-accepterede
+                    // (auto_accept), som ikke staar som "ny" (isNew=false). Ellers gaar
+                    // lyden tabt naar forretningen har automatisk bekraeftelse slaaet til.
+                    let incomingNew = Set(r.orders.map { $0.id })
                     let fresh = incomingNew.subtracting(knownOrderIds)
                     if didInitialLoad && !fresh.isEmpty { alertNewOrder() }
                     knownOrderIds = incomingNew
