@@ -1427,6 +1427,7 @@ final class WrombleAlarm {
             try AVAudioSession.sharedInstance().setCategory(.playback, options: [.duckOthers])
             try AVAudioSession.sharedInstance().setActive(true)
             if player == nil || builtMelody != m {
+                player?.stop()   // stop en evt. igangvaerende afspilning foer vi bygger en ny (undgaa overlap)
                 player = try AVAudioPlayer(data: makeAlarmData(m))
                 builtMelody = m
             }
@@ -1453,6 +1454,7 @@ final class WrombleAlarm {
 
     // Kort forhaandsvisning (2 sek) af en melodi, saa man kan hoere valget.
     func preview(_ melody: Int) {
+        stop()                     // stop enhver igangvaerende lyd/preview foerst -> ingen overlappende lyde
         WrombleAlarm.melody = melody
         player = nil               // tving genopbygning med den nye melodi
         start(seconds: 2)
