@@ -270,6 +270,10 @@ struct OrderStatus {
     var companyAddress: String = ""
     var customerLat: Double = 0
     var customerLng: Double = 0
+    var driverLat: Double = 0
+    var driverLng: Double = 0
+    var riderLive: Bool = false
+    var etaText: String = ""
 }
 
 // MARK: - Favorites Manager
@@ -6169,9 +6173,21 @@ struct OrderTrackingView: View {
                 // i stedet for et rigtigt kort. Bilen flytter sig langs ruten efter ordrens status.
                 if !isRejected, let s = status {
                     VStack(spacing: 10) {
-                        DeliveryRouteView(stage: stage,
-                                          isDelivery: s.isDelivery,
-                                          companyName: s.companyName.isEmpty ? initialCompany : s.companyName)
+                        if s.stage == 2 && s.riderLive && s.isDelivery {
+                            // Live-kort: chaufføerens rigtige GPS-position paa vej til kunden.
+                            liveDeliveryMap(s)
+                            if !s.etaText.isEmpty {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "bicycle")
+                                    Text(s.etaText).font(.subheadline.weight(.bold))
+                                }
+                                .foregroundColor(wrombleRed)
+                            }
+                        } else {
+                            DeliveryRouteView(stage: stage,
+                                              isDelivery: s.isDelivery,
+                                              companyName: s.companyName.isEmpty ? initialCompany : s.companyName)
+                        }
 
                         // Valgfri: aabn adressen i kort-app hvis kunden selv vil have rutevejledning.
                         if !mapPins.isEmpty {
@@ -6259,6 +6275,49 @@ struct OrderTrackingView: View {
         }
     }
 
+    // Et punkt paa live-kortet (chauffoer / kunde / restaurant).
+    private struct TrackPin: Identifiable {
+        let id = UUID()
+        let coord: CLLocationCoordinate2D
+        let icon: String
+        let color: Color
+    }
+
+    @ViewBuilder
+    private func liveDeliveryMap(_ s: OrderStatus) -> some View {
+        let driver = CLLocationCoordinate2D(latitude: s.driverLat, longitude: s.driverLng)
+        let hasDest = s.customerLat != 0 || s.customerLng != 0
+        let dest = CLLocationCoordinate2D(latitude: s.customerLat, longitude: s.customerLng)
+        var pins: [TrackPin] = [TrackPin(coord: driver, icon: "bicycle", color: wrombleRed)]
+        if hasDest { pins.append(TrackPin(coord: dest, icon: "house.fill", color: .blue)) }
+        if s.companyLat != 0 || s.companyLng != 0 {
+            pins.append(TrackPin(coord: CLLocationCoordinate2D(latitude: s.companyLat, longitude: s.companyLng),
+                                 icon: "fork.knife", color: .gray))
+        }
+        let region: MKCoordinateRegion = {
+            if hasDest {
+                let cLat = (driver.latitude + dest.latitude) / 2
+                let cLng = (driver.longitude + dest.longitude) / 2
+                let sLat = max(abs(driver.latitude - dest.latitude) * 1.8, 0.008)
+                let sLng = max(abs(driver.longitude - dest.longitude) * 1.8, 0.008)
+                return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: cLat, longitude: cLng),
+                                          span: MKCoordinateSpan(latitudeDelta: sLat, longitudeDelta: sLng))
+            }
+            return MKCoordinateRegion(center: driver, span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02))
+        }()
+        Map(coordinateRegion: .constant(region), annotationItems: pins) { p in
+            MapAnnotation(coordinate: p.coord) {
+                ZStack {
+                    Circle().fill(p.color).frame(width: 30, height: 30).shadow(radius: 2)
+                    Image(systemName: p.icon).foregroundColor(.white).font(.system(size: 14, weight: .bold))
+                }
+            }
+        }
+        .frame(height: 220)
+        .cornerRadius(14)
+        .allowsHitTesting(false)
+    }
+
     func fetchStatus() async {
         guard let url = URL(string: "\(baseURL)/api/order-status.php?order_id=\(orderId)") else { return }
         do {
@@ -6277,7 +6336,11 @@ struct OrderTrackingView: View {
                 companyLng: (json["company_lng"] as? NSNumber)?.doubleValue ?? 0,
                 companyAddress: json["company_address"] as? String ?? "",
                 customerLat: (json["customer_lat"] as? NSNumber)?.doubleValue ?? 0,
-                customerLng: (json["customer_lng"] as? NSNumber)?.doubleValue ?? 0)
+                customerLng: (json["customer_lng"] as? NSNumber)?.doubleValue ?? 0,
+                driverLat: (json["rider_lat"] as? NSNumber)?.doubleValue ?? 0,
+                driverLng: (json["rider_lng"] as? NSNumber)?.doubleValue ?? 0,
+                riderLive: (json["rider_live"] as? Bool) ?? false,
+                etaText: json["eta_text"] as? String ?? "")
             await MainActor.run {
                 // Behagelig lyd til kunden hver gang ordren rykker et trin frem.
                 if let prev = lastStage, s.stage >= 0, s.stage > prev,
