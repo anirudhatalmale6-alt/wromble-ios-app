@@ -27,95 +27,116 @@ jobs:
           printf '%s' "$P8_KEY" > ~/private_keys/AuthKey_${API_KEY_ID}.p8
           echo "API key installed"
 
-      - name: Create distribution certificate + App Store profile (with Push)
+      - name: Prepare signing (reuse persisted cert; mint only as fallback)
+        env:
+          DIST_CERT_P12: ${{ secrets.DIST_CERT_P12 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+          DIST_CERT_ID: ${{ secrets.DIST_CERT_ID }}
         run: |
           set -e
           pip3 install --quiet --break-system-packages pyjwt cryptography
-          # Private key + CSR for a fresh distribution certificate
-          openssl genrsa -out /tmp/dist.key 2048
-          openssl req -new -key /tmp/dist.key -out /tmp/dist.csr -subj "/CN=Wromble CI/O=Wromble/C=DK"
 
-          python3 - << 'PY'
-          import jwt, time, json, os, urllib.request, urllib.error
-          kid = os.environ['API_KEY_ID']; iss = os.environ['API_ISSUER_ID']
-          key = open(os.path.expanduser(f'~/private_keys/AuthKey_{kid}.p8')).read()
-          def tok():
-              return jwt.encode({'iss': iss, 'iat': int(time.time()), 'exp': int(time.time())+900,
-                                 'aud': 'appstoreconnect-v1'}, key, algorithm='ES256',
-                                headers={'kid': kid, 'typ': 'JWT'})
-          def api(method, url, body=None):
-              H = {'Authorization': f'Bearer {tok()}', 'Content-Type': 'application/json'}
-              data = json.dumps(body).encode() if body else None
-              req = urllib.request.Request(url, data=data, headers=H, method=method)
-              try:
-                  r = urllib.request.urlopen(req)
-                  raw = r.read().decode()
-                  return r.status, (json.loads(raw) if raw else {})
-              except urllib.error.HTTPError as e:
-                  return e.code, json.loads(e.read().decode() or '{}')
-          BASE = 'https://api.appstoreconnect.apple.com/v1'
-
-          # Bundle id resource + ensure Push capability is on
-          st, res = api('GET', BASE + '/bundleIds?filter%5Bidentifier%5D=dk.wromble.app')
-          bid = res['data'][0]['id']; print('bundleId:', bid)
-          st, r2 = api('POST', BASE + '/bundleIdCapabilities',
-                       {'data': {'type': 'bundleIdCapabilities',
-                                 'attributes': {'capabilityType': 'PUSH_NOTIFICATIONS'},
-                                 'relationships': {'bundleId': {'data': {'type': 'bundleIds', 'id': bid}}}}})
-          print('push capability:', 'enabled' if st < 400 else f'already/err {st}')
-
-          # Free a slot: revoke existing non-managed distribution certs
-          st, res = api('GET', BASE + '/certificates?filter%5BcertificateType%5D=IOS_DISTRIBUTION&limit=200')
-          for c in res.get('data', []):
-              d, _ = api('DELETE', BASE + f"/certificates/{c['id']}")
-              print('revoked old cert', c['id'], d)
-
-          # Create the distribution certificate from our CSR
-          csr = open('/tmp/dist.csr').read()
-          st, res = api('POST', BASE + '/certificates',
-                        {'data': {'type': 'certificates',
-                                  'attributes': {'certificateType': 'IOS_DISTRIBUTION', 'csrContent': csr}}})
-          print('cert create HTTP', st)
-          if st >= 400:
-              print(json.dumps(res)[:1000]); raise SystemExit(1)
-          cert = res['data']; cert_id = cert['id']
-          open('/tmp/cert.b64', 'w').write(cert['attributes']['certificateContent'])
-          print('cert id:', cert_id)
-
-          # Recreate the App Store profile bound to bundle + this cert
-          st, res = api('GET', BASE + '/profiles?filter%5Bname%5D=Wromble%20CI%20AppStore')
-          for p in res.get('data', []):
-              api('DELETE', BASE + f"/profiles/{p['id']}")
-              print('deleted old profile', p['id'])
-          st, res = api('POST', BASE + '/profiles',
-                        {'data': {'type': 'profiles',
-                                  'attributes': {'name': 'Wromble CI AppStore', 'profileType': 'IOS_APP_STORE'},
-                                  'relationships': {'bundleId': {'data': {'type': 'bundleIds', 'id': bid}},
-                                                    'certificates': {'data': [{'type': 'certificates', 'id': cert_id}]}}}})
-          print('profile create HTTP', st)
-          if st >= 400:
-              print(json.dumps(res)[:1000]); raise SystemExit(1)
-          open('/tmp/profile.b64', 'w').write(res['data']['attributes']['profileContent'])
-          print('profile ready')
+          # 1) Reuse the persisted distribution cert if it is still valid on Apple.
+          #    This avoids creating a new cert every build (which would revoke the old
+          #    one and spam the account owner with "certificate revoked" emails).
+          REUSE=0
+          if [ -n "$DIST_CERT_P12" ] && [ -n "$DIST_CERT_ID" ]; then
+            if python3 - << 'PY'
+          import jwt, time, os, json, urllib.request, sys
+          kid=os.environ['API_KEY_ID']; iss=os.environ['API_ISSUER_ID']
+          key=open(os.path.expanduser(f"~/private_keys/AuthKey_{kid}.p8")).read()
+          t=jwt.encode({'iss':iss,'iat':int(time.time()),'exp':int(time.time())+900,'aud':'appstoreconnect-v1'},key,algorithm='ES256',headers={'kid':kid,'typ':'JWT'})
+          cid=os.environ['DIST_CERT_ID']
+          req=urllib.request.Request(f"https://api.appstoreconnect.apple.com/v1/certificates/{cid}",headers={'Authorization':f'Bearer {t}'})
+          try:
+              r=urllib.request.urlopen(req); d=json.loads(r.read().decode())
+              sys.exit(0 if d.get('data') else 1)
+          except Exception:
+              sys.exit(1)
           PY
+            then REUSE=1; fi
+          fi
 
-          # Build .p12 from key + issued cert
-          base64 -D -i /tmp/cert.b64 -o /tmp/dist.cer
-          openssl x509 -inform DER -in /tmp/dist.cer -out /tmp/dist.pem
-          openssl pkcs12 -export -inkey /tmp/dist.key -in /tmp/dist.pem \
-            -out /tmp/dist.p12 -passout pass:ci -name wromble_dist
+          if [ "$REUSE" = "1" ]; then
+            echo "Reusing persisted distribution cert $DIST_CERT_ID (no mint, no revoke)"
+            echo "$DIST_CERT_P12" | base64 -d > /tmp/dist.p12
+            IMPORT_PASS="$DIST_CERT_PASSWORD"
+            CERT_ID="$DIST_CERT_ID"
+          else
+            echo "No valid persisted cert -> minting a fresh one (fallback path)"
+            openssl genrsa -out /tmp/dist.key 2048
+            openssl req -new -key /tmp/dist.key -out /tmp/dist.csr -subj "/CN=Wromble CI/O=Wromble/C=DK"
+            python3 - << 'PY'
+          import jwt, time, json, os, urllib.request, urllib.error
+          kid=os.environ['API_KEY_ID']; iss=os.environ['API_ISSUER_ID']
+          key=open(os.path.expanduser(f"~/private_keys/AuthKey_{kid}.p8")).read()
+          def tok(): return jwt.encode({'iss':iss,'iat':int(time.time()),'exp':int(time.time())+900,'aud':'appstoreconnect-v1'},key,algorithm='ES256',headers={'kid':kid,'typ':'JWT'})
+          def api(m,u,b=None):
+              H={'Authorization':f'Bearer {tok()}','Content-Type':'application/json'}
+              data=json.dumps(b).encode() if b else None
+              req=urllib.request.Request(u,data=data,headers=H,method=m)
+              try:
+                  r=urllib.request.urlopen(req); raw=r.read().decode(); return r.status,(json.loads(raw) if raw else {})
+              except urllib.error.HTTPError as e: return e.code, json.loads(e.read().decode() or '{}')
+          BASE='https://api.appstoreconnect.apple.com/v1'
+          # only free a slot if already at Apple's 2-cert limit (revoke oldest)
+          st,res=api('GET',BASE+'/certificates?filter%5BcertificateType%5D=IOS_DISTRIBUTION&limit=200')
+          certs=res.get('data',[])
+          if len(certs)>=2:
+              d,_=api('DELETE',BASE+f"/certificates/{certs[0]['id']}"); print('freed slot',certs[0]['id'],d)
+          csr=open('/tmp/dist.csr').read()
+          st,res=api('POST',BASE+'/certificates',{'data':{'type':'certificates','attributes':{'certificateType':'IOS_DISTRIBUTION','csrContent':csr}}})
+          if st>=400: print(json.dumps(res)[:800]); raise SystemExit(1)
+          cert=res['data']
+          open('/tmp/cert.b64','w').write(cert['attributes']['certificateContent'])
+          open('/tmp/cert_id.txt','w').write(cert['id'])
+          print('minted cert', cert['id'])
+          PY
+            base64 -D -i /tmp/cert.b64 -o /tmp/dist.cer
+            openssl x509 -inform DER -in /tmp/dist.cer -out /tmp/dist.pem
+            openssl pkcs12 -export -inkey /tmp/dist.key -in /tmp/dist.pem -out /tmp/dist.p12 -passout pass:ci -name wromble_dist
+            IMPORT_PASS=ci
+            CERT_ID=$(cat /tmp/cert_id.txt)
+          fi
 
-          # Temporary keychain holding the signing identity
+          # 2) Ensure Push capability + (re)create the App Store profile bound to CERT_ID.
+          #    Recreating a profile does NOT send any email (only cert revocation does).
+          CERT_ID="$CERT_ID" python3 - << 'PY'
+          import jwt, time, json, os, urllib.request, urllib.error
+          kid=os.environ['API_KEY_ID']; iss=os.environ['API_ISSUER_ID']
+          key=open(os.path.expanduser(f"~/private_keys/AuthKey_{kid}.p8")).read()
+          def tok(): return jwt.encode({'iss':iss,'iat':int(time.time()),'exp':int(time.time())+900,'aud':'appstoreconnect-v1'},key,algorithm='ES256',headers={'kid':kid,'typ':'JWT'})
+          def api(m,u,b=None):
+              H={'Authorization':f'Bearer {tok()}','Content-Type':'application/json'}
+              data=json.dumps(b).encode() if b else None
+              req=urllib.request.Request(u,data=data,headers=H,method=m)
+              try:
+                  r=urllib.request.urlopen(req); raw=r.read().decode(); return r.status,(json.loads(raw) if raw else {})
+              except urllib.error.HTTPError as e: return e.code, json.loads(e.read().decode() or '{}')
+          BASE='https://api.appstoreconnect.apple.com/v1'
+          cid=os.environ['CERT_ID']
+          st,res=api('GET',BASE+'/bundleIds?filter%5Bidentifier%5D=dk.wromble.app'); bid=res['data'][0]['id']
+          st,_=api('POST',BASE+'/bundleIdCapabilities',{'data':{'type':'bundleIdCapabilities','attributes':{'capabilityType':'PUSH_NOTIFICATIONS'},'relationships':{'bundleId':{'data':{'type':'bundleIds','id':bid}}}}})
+          print('push capability:', 'enabled' if st<400 else f'already/err {st}')
+          st,res=api('GET',BASE+'/profiles?filter%5Bname%5D=Wromble%20CI%20AppStore')
+          for p in res.get('data',[]): api('DELETE',BASE+f"/profiles/{p['id']}")
+          st,res=api('POST',BASE+'/profiles',{'data':{'type':'profiles','attributes':{'name':'Wromble CI AppStore','profileType':'IOS_APP_STORE'},'relationships':{'bundleId':{'data':{'type':'bundleIds','id':bid}},'certificates':{'data':[{'type':'certificates','id':cid}]}}}})
+          if st>=400: print(json.dumps(res)[:800]); raise SystemExit(1)
+          open('/tmp/profile.b64','w').write(res['data']['attributes']['profileContent'])
+          print('profile ready for cert', cid)
+          PY
+          base64 -D -i /tmp/profile.b64 -o /tmp/wromble.mobileprovision
+
+          # 3) Temporary keychain holding the signing identity
           security create-keychain -p ci build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p ci build.keychain
           security set-keychain-settings -t 3600 -l build.keychain
-          security import /tmp/dist.p12 -k build.keychain -P ci -T /usr/bin/codesign -T /usr/bin/security
+          security import /tmp/dist.p12 -k build.keychain -P "$IMPORT_PASS" -T /usr/bin/codesign -T /usr/bin/security
           security list-keychains -d user -s build.keychain login.keychain
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
 
           # Install the provisioning profile
-          base64 -D -i /tmp/profile.b64 -o /tmp/wromble.mobileprovision
           security cms -D -i /tmp/wromble.mobileprovision > /tmp/profile.plist
           UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /tmp/profile.plist)
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
