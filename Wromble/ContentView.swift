@@ -1386,15 +1386,21 @@ final class WrombleAlarm {
         get { UserDefaults.standard.integer(forKey: "wr_alarm_melody") }
         set { UserDefaults.standard.set(newValue, forKey: "wr_alarm_melody") }
     }
-    static let melodyNames = ["Klassisk", "Stigende", "Hurtig"]
+    // 0-2 = klassiske alarm-bip (kraftige). 3-6 = bloede/behagelige toner (firma+kunde).
+    static let melodyNames = ["Klassisk", "Stigende", "Hurtig", "Blød", "Perle", "Rolig", "Pling"]
 
     private func makeAlarmData(_ melody: Int) -> Data {
         let sr = 44100.0
         let tones: [Double]; let beep: Double; let gap: Double; let count: Int
+        let amp: Double; let soft: Bool
         switch melody {
-        case 1: tones = [880.0, 1108.7, 1318.5]; beep = 0.16; gap = 0.05; count = 9   // stigende
-        case 2: tones = [1318.5];                beep = 0.09; gap = 0.05; count = 12  // hurtige bip
-        default: tones = [1046.5, 784.0];        beep = 0.18; gap = 0.06; count = 8   // klassisk
+        case 1: tones = [880.0, 1108.7, 1318.5]; beep = 0.16; gap = 0.05; count = 9;  amp = 0.90; soft = false // stigende
+        case 2: tones = [1318.5];                beep = 0.09; gap = 0.05; count = 12; amp = 0.90; soft = false // hurtige bip
+        case 3: tones = [659.25, 783.99];        beep = 0.45; gap = 0.18; count = 4;  amp = 0.55; soft = true  // Blød
+        case 4: tones = [523.25, 659.25, 783.99, 1046.5]; beep = 0.22; gap = 0.06; count = 8; amp = 0.55; soft = true // Perle (arpeggio)
+        case 5: tones = [587.33, 440.0];         beep = 0.55; gap = 0.30; count = 4;  amp = 0.45; soft = true  // Rolig
+        case 6: tones = [880.0, 1174.66];        beep = 0.40; gap = 0.35; count = 4;  amp = 0.50; soft = true  // Pling
+        default: tones = [1046.5, 784.0];        beep = 0.18; gap = 0.06; count = 8;  amp = 0.90; soft = false // klassisk
         }
         var pcm = [Int16]()
         for t in 0..<count {
@@ -1402,8 +1408,15 @@ final class WrombleAlarm {
             let bn = Int(sr * beep)
             for k in 0..<bn {
                 let x = Double(k) / sr
-                let env = min(1.0, min(Double(k), Double(bn - k)) / (sr * 0.005)) // blid start/slut
-                let s = sin(2.0 * .pi * f * x) * env * 0.9
+                let env: Double
+                if soft {
+                    // blød klokke: hurtig blid start, derefter eksponentielt henfald
+                    let attack = min(1.0, Double(k) / (sr * 0.004))
+                    env = attack * exp(-3.0 * (Double(k) / Double(bn)))
+                } else {
+                    env = min(1.0, min(Double(k), Double(bn - k)) / (sr * 0.005)) // blid start/slut
+                }
+                let s = sin(2.0 * .pi * f * x) * env * amp
                 pcm.append(Int16(max(-1.0, min(1.0, s)) * 32767))
             }
             for _ in 0..<Int(sr * gap) { pcm.append(0) }
@@ -1458,6 +1471,22 @@ final class WrombleAlarm {
         WrombleAlarm.melody = melody
         player = nil               // tving genopbygning med den nye melodi
         start(seconds: 2)
+    }
+
+    // EN-gangs behagelig lyd (ikke loop) - bruges til kunden ved statusskift paa ordren.
+    private var chimePlayer: AVAudioPlayer?
+    func chime() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.ambient, options: [.mixWithOthers])
+            try AVAudioSession.sharedInstance().setActive(true)
+            chimePlayer = try AVAudioPlayer(data: makeAlarmData(WrombleAlarm.melody))
+            chimePlayer?.volume = 0.85
+            chimePlayer?.numberOfLoops = 0
+            chimePlayer?.prepareToPlay()
+            chimePlayer?.play()
+        } catch {
+            AudioServicesPlaySystemSound(1007)
+        }
     }
 }
 
@@ -3739,15 +3768,28 @@ struct HomeView: View {
                     .padding(.bottom, 16)
 
                     // Kategorier (Wolt-inspireret raekke med rigtige produktbilleder)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(alignment: .top, spacing: 14) {
-                            // "Alle"-fliser foerst
-                            categoryTileButton(key: "all", name: "Alle", image: nil)
-                            ForEach(productCats) { cat in
-                                categoryTileButton(key: cat.key, name: cat.name, image: cat.image)
+                    Group {
+                        if sizeClass == .regular && (productCats.count + 1) <= 8 {
+                            // Tablet: fordel kategorierne jaevnt ud over hele bredden (helt til kanten)
+                            HStack(alignment: .top, spacing: 14) {
+                                categoryTileButton(key: "all", name: "Alle", image: nil, fillWidth: true)
+                                ForEach(productCats) { cat in
+                                    categoryTileButton(key: cat.key, name: cat.name, image: cat.image, fillWidth: true)
+                                }
+                            }
+                            .padding(.horizontal, 24)
+                        } else {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(alignment: .top, spacing: 14) {
+                                    // "Alle"-fliser foerst
+                                    categoryTileButton(key: "all", name: "Alle", image: nil)
+                                    ForEach(productCats) { cat in
+                                        categoryTileButton(key: cat.key, name: cat.name, image: cat.image)
+                                    }
+                                }
+                                .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                             }
                         }
-                        .padding(.horizontal, sizeClass == .regular ? 24 : 16)
                     }
                     .padding(.bottom, 20)
 
@@ -3991,31 +4033,38 @@ struct HomeView: View {
     }
 
     // En kategori-flise (Wolt-stil): rigtigt produktbillede hvis muligt, ellers emoji+gradient
-    func categoryTileButton(key: String, name: String, image: String?) -> some View {
+    func categoryTileButton(key: String, name: String, image: String?, fillWidth: Bool = false) -> some View {
         let isSel = selectedCatKey == key
         return Button(action: {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             withAnimation(.easeOut(duration: 0.2)) { selectedCatKey = key }
         }) {
             let style = catStyle(key)
-            VStack(spacing: 7) {
-                ZStack {
-                    if let img = image, !img.isEmpty {
-                        CachedAsyncImage(url: wrombleImageURL(img)) { phase in
-                            switch phase {
-                            case .success(let image): image.resizable().scaledToFill()
-                            default: LinearGradient(colors: style.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
-                            }
-                        }
-                    } else {
-                        ZStack {
-                            LinearGradient(colors: style.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
-                            Text(style.emoji).font(.system(size: 32))
-                                .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+            let tile = ZStack {
+                if let img = image, !img.isEmpty {
+                    CachedAsyncImage(url: wrombleImageURL(img)) { phase in
+                        switch phase {
+                        case .success(let image): image.resizable().scaledToFill()
+                        default: LinearGradient(colors: style.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
                         }
                     }
+                } else {
+                    ZStack {
+                        LinearGradient(colors: style.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                        Text(style.emoji).font(.system(size: 32))
+                            .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                    }
                 }
-                .frame(width: 72, height: 72)
+            }
+            VStack(spacing: 7) {
+                // fillWidth: paa tablet fylder fliserne hele bredden jaevnt ud (helt til kanten).
+                Group {
+                    if fillWidth {
+                        tile.aspectRatio(1, contentMode: .fit).frame(maxWidth: .infinity)
+                    } else {
+                        tile.frame(width: 72, height: 72)
+                    }
+                }
                 .clipped()
                 .cornerRadius(18)
                 .overlay(RoundedRectangle(cornerRadius: 18).stroke(wrombleRed, lineWidth: isSel ? 3 : 0))
@@ -4025,7 +4074,7 @@ struct HomeView: View {
                     .font(.caption2.weight(isSel ? .bold : .semibold))
                     .foregroundColor(isSel ? wrombleRed : .primary)
                     .lineLimit(1).minimumScaleFactor(0.75)
-                    .frame(width: 82)
+                    .frame(maxWidth: fillWidth ? .infinity : 82)
             }
         }
         .buttonStyle(.plain)
@@ -6011,6 +6060,7 @@ struct OrderTrackingView: View {
     @State private var status: OrderStatus?
     @State private var isLoading = true
     @State private var pollTimer: Timer?
+    @State private var lastStage: Int? = nil     // til at spille en lyd naar ordren rykker et trin frem
     @State private var mapRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 55.676, longitude: 12.568),
         span: MKCoordinateSpan(latitudeDelta: 0.04, longitudeDelta: 0.04))
@@ -6221,6 +6271,12 @@ struct OrderTrackingView: View {
                 customerLat: (json["customer_lat"] as? NSNumber)?.doubleValue ?? 0,
                 customerLng: (json["customer_lng"] as? NSNumber)?.doubleValue ?? 0)
             await MainActor.run {
+                // Behagelig lyd til kunden hver gang ordren rykker et trin frem.
+                if let prev = lastStage, s.stage >= 0, s.stage > prev,
+                   AppState.shared.notificationsEnabled {
+                    WrombleAlarm.shared.chime()
+                }
+                lastStage = s.stage
                 status = s
                 isLoading = false
                 centerMapIfNeeded(s)
@@ -6733,6 +6789,7 @@ struct ProfileView: View {
     @State private var showPartner = false
     @State private var showJobs = false
     @State private var showProfileEdit = false
+    @State private var showSound = false
     @State private var loggedInUser: UserProfile?
 
     // Laeser version + build direkte fra bundlen, saa den altid matcher TestFlight
@@ -6798,6 +6855,10 @@ struct ProfileView: View {
                         }
                     } else { appState.save() }
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
+
+                Button(action: { showSound = true }) {
+                    Label("Lyd ved ordre-opdatering", systemImage: "music.note").foregroundColor(.primary)
                 }
             }
 
@@ -6953,6 +7014,7 @@ struct ProfileView: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Luk") { showSupportChat = false } } }
             }
         }
+        .sheet(isPresented: $showSound) { AlarmSettingsSheet(seconds: .constant(0), showDuration: false) }
         .sheet(isPresented: $showContactForm) { ContactFormView() }
         .sheet(isPresented: $showPartner) { PartnerFormView() }
         .sheet(isPresented: $showJobs) { JobsView() }
