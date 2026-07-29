@@ -6283,7 +6283,6 @@ struct OrderTrackingView: View {
         let color: Color
     }
 
-    @ViewBuilder
     private func liveDeliveryMap(_ s: OrderStatus) -> some View {
         let driver = CLLocationCoordinate2D(latitude: s.driverLat, longitude: s.driverLng)
         let hasDest = s.customerLat != 0 || s.customerLng != 0
@@ -6294,18 +6293,18 @@ struct OrderTrackingView: View {
             pins.append(TrackPin(coord: CLLocationCoordinate2D(latitude: s.companyLat, longitude: s.companyLng),
                                  icon: "fork.knife", color: .gray))
         }
-        let region: MKCoordinateRegion = {
-            if hasDest {
-                let cLat = (driver.latitude + dest.latitude) / 2
-                let cLng = (driver.longitude + dest.longitude) / 2
-                let sLat = max(abs(driver.latitude - dest.latitude) * 1.8, 0.008)
-                let sLng = max(abs(driver.longitude - dest.longitude) * 1.8, 0.008)
-                return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: cLat, longitude: cLng),
-                                          span: MKCoordinateSpan(latitudeDelta: sLat, longitudeDelta: sLng))
-            }
-            return MKCoordinateRegion(center: driver, span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02))
-        }()
-        Map(coordinateRegion: .constant(region), annotationItems: pins) { p in
+        let region: MKCoordinateRegion
+        if hasDest {
+            let cLat = (driver.latitude + dest.latitude) / 2
+            let cLng = (driver.longitude + dest.longitude) / 2
+            let sLat = max(abs(driver.latitude - dest.latitude) * 1.8, 0.008)
+            let sLng = max(abs(driver.longitude - dest.longitude) * 1.8, 0.008)
+            region = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: cLat, longitude: cLng),
+                                        span: MKCoordinateSpan(latitudeDelta: sLat, longitudeDelta: sLng))
+        } else {
+            region = MKCoordinateRegion(center: driver, span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02))
+        }
+        return Map(coordinateRegion: .constant(region), annotationItems: pins) { p in
             MapAnnotation(coordinate: p.coord) {
                 ZStack {
                     Circle().fill(p.color).frame(width: 30, height: 30).shadow(radius: 2)
