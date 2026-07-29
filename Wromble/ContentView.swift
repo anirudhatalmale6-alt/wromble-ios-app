@@ -1379,14 +1379,26 @@ final class WrombleAlarm {
     static let shared = WrombleAlarm()
     private var player: AVAudioPlayer?
     private var stopWork: DispatchWorkItem?
+    private var builtMelody = -1
 
-    private func makeAlarmData() -> Data {
+    // Melodi-valg gemmes lokalt paa enheden (samme noegle for forretning og chauffoer).
+    static var melody: Int {
+        get { UserDefaults.standard.integer(forKey: "wr_alarm_melody") }
+        set { UserDefaults.standard.set(newValue, forKey: "wr_alarm_melody") }
+    }
+    static let melodyNames = ["Klassisk", "Stigende", "Hurtig"]
+
+    private func makeAlarmData(_ melody: Int) -> Data {
         let sr = 44100.0
-        let tones: [Double] = [1046.5, 784.0]   // C6 / G5 skiftevis = alarm-agtigt
-        let beep = 0.18, gap = 0.06
+        let tones: [Double]; let beep: Double; let gap: Double; let count: Int
+        switch melody {
+        case 1: tones = [880.0, 1108.7, 1318.5]; beep = 0.16; gap = 0.05; count = 9   // stigende
+        case 2: tones = [1318.5];                beep = 0.09; gap = 0.05; count = 12  // hurtige bip
+        default: tones = [1046.5, 784.0];        beep = 0.18; gap = 0.06; count = 8   // klassisk
+        }
         var pcm = [Int16]()
-        for t in 0..<8 {                         // 8 bip pr. runde (~1.9 sek)
-            let f = tones[t % 2]
+        for t in 0..<count {
+            let f = tones[t % tones.count]
             let bn = Int(sr * beep)
             for k in 0..<bn {
                 let x = Double(k) / sr
@@ -1409,11 +1421,15 @@ final class WrombleAlarm {
         return d
     }
 
-    func start(seconds: Double = 8) {
+    func start(seconds: Double = 5) {
+        let m = WrombleAlarm.melody
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, options: [.duckOthers])
             try AVAudioSession.sharedInstance().setActive(true)
-            if player == nil { player = try AVAudioPlayer(data: makeAlarmData()) }
+            if player == nil || builtMelody != m {
+                player = try AVAudioPlayer(data: makeAlarmData(m))
+                builtMelody = m
+            }
             guard let p = player else { return }
             p.numberOfLoops = -1
             p.volume = 1.0
@@ -1434,11 +1450,65 @@ final class WrombleAlarm {
         player?.stop(); player?.currentTime = 0
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
+
+    // Kort forhaandsvisning (2 sek) af en melodi, saa man kan hoere valget.
+    func preview(_ melody: Int) {
+        WrombleAlarm.melody = melody
+        player = nil               // tving genopbygning med den nye melodi
+        start(seconds: 2)
+    }
+}
+
+// Delt lyd-indstillings-ark (melodi + evt. varighed). Bruges af chaufføeren.
+struct AlarmSettingsSheet: View {
+    @Binding var seconds: Int
+    let showDuration: Bool
+    @AppStorage("wr_alarm_melody") private var melody = 0
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            Form {
+                if showDuration {
+                    Section(header: Text("Varighed"),
+                            footer: Text(seconds == 0 ? "Der afspilles ingen lyd ved nye leverancer." : "Alarmen spiller i \(seconds) sekunder.")) {
+                        Picker("Varighed", selection: $seconds) {
+                            Text("Fra").tag(0); Text("5s").tag(5); Text("10s").tag(10); Text("15s").tag(15)
+                        }.pickerStyle(.segmented)
+                    }
+                }
+                Section(header: Text("Melodi"), footer: Text("Tryk for at høre og vælge en melodi.")) {
+                    ForEach(Array(WrombleAlarm.melodyNames.enumerated()), id: \.offset) { idx, name in
+                        Button {
+                            melody = idx
+                            WrombleAlarm.shared.preview(idx)
+                        } label: {
+                            HStack {
+                                Image(systemName: "music.note").foregroundColor(wrombleRed)
+                                Text(name).foregroundColor(.primary)
+                                Spacer()
+                                if melody == idx { Image(systemName: "checkmark").foregroundColor(wrombleRed) }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Lyd-indstillinger")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Færdig") { WrombleAlarm.shared.stop(); dismiss() }
+                }
+            }
+        }
+    }
 }
 
 struct DriverDashboardView: View {
     let session: StaffSession
     @State private var orders: [DriverOrder] = []
+    @AppStorage("wr_driver_alarm_seconds") private var driverAlarmSeconds = 5
+    @State private var showAlarmSettings = false
     @State private var isLoading = true
     @State private var actionId: Int?
     @State private var toast: String?
@@ -1484,16 +1554,20 @@ struct DriverDashboardView: View {
         .navigationTitle("Chauffoer")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button { showAlarmSettings = true } label: { Image(systemName: "bell.badge") }
                 NavigationLink { StripeEarningsView(recipientType: "rider", recipientId: session.id, heading: "Drikkepenge") } label: {
                     Image(systemName: "banknote.fill")
                 }
             }
         }
+        .sheet(isPresented: $showAlarmSettings) {
+            AlarmSettingsSheet(seconds: $driverAlarmSeconds, showDuration: true)
+        }
         .refreshable { await load() }
         .task { await load() }
         .onAppear { startAutoRefresh(); loc.startTracking() }
-        .onDisappear { refreshTimer?.invalidate(); refreshTimer = nil; loc.stopTracking() }
+        .onDisappear { refreshTimer?.invalidate(); refreshTimer = nil; loc.stopTracking(); WrombleAlarm.shared.stop() }
         .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
         .confirmationDialog("Naviger til kunden", isPresented: Binding(get: { mapsOrder != nil }, set: { if !$0 { mapsOrder = nil } }), titleVisibility: .visible) {
             if let o = mapsOrder {
@@ -1565,7 +1639,8 @@ struct DriverDashboardView: View {
 
     // Lyd + vibration naar en ny leverance er kommet ind mens siden er aaben.
     func alertNewOrder() {
-        WrombleAlarm.shared.start()   // hoej alarm ved ny leverance
+        guard driverAlarmSeconds > 0 else { return }
+        WrombleAlarm.shared.start(seconds: Double(driverAlarmSeconds))   // chaufføerens valgte varighed
     }
 
     var headerCard: some View {
@@ -2170,6 +2245,7 @@ struct CompanyDashboardView: View {
     @State private var autoLoading = true
     @State private var alarmSeconds = 5
     @State private var alarmLoading = true
+    @AppStorage("wr_alarm_melody") private var alarmMelody = 0
 
     var body: some View {
         List {
@@ -2220,6 +2296,22 @@ struct CompanyDashboardView: View {
                 }
                 .pickerStyle(.segmented)
                 .disabled(alarmLoading)
+
+                if alarmSeconds > 0 {
+                    ForEach(Array(WrombleAlarm.melodyNames.enumerated()), id: \.offset) { idx, name in
+                        Button {
+                            alarmMelody = idx
+                            WrombleAlarm.shared.preview(idx)
+                        } label: {
+                            HStack {
+                                Image(systemName: "music.note").foregroundColor(wrombleRed)
+                                Text(name).foregroundColor(.primary)
+                                Spacer()
+                                if alarmMelody == idx { Image(systemName: "checkmark").foregroundColor(wrombleRed) }
+                            }
+                        }
+                    }
+                }
             }
             Section(header: Text("Administrer")) {
                 NavigationLink { CompanyOrdersView(session: session) } label: {
