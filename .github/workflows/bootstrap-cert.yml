@@ -1,0 +1,86 @@
+name: Bootstrap Persistent Signing Cert (one-time)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bootstrap:
+    runs-on: macos-15
+    env:
+      API_KEY_ID: ${{ secrets.APP_STORE_KEY_ID }}
+      API_ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
+      P12PASS: WrombleCI2026
+    steps:
+      - name: Install API Key
+        env:
+          P8_KEY: ${{ secrets.APP_STORE_KEY_P8 }}
+        run: |
+          mkdir -p ~/private_keys
+          printf '%s' "$P8_KEY" > ~/private_keys/AuthKey_${API_KEY_ID}.p8
+
+      - name: Mint one distribution cert + profile, emit encrypted bundle
+        env:
+          BOOT_PASS: ${{ secrets.BOOT_PASS }}
+        run: |
+          set -e
+          pip3 install --quiet --break-system-packages pyjwt cryptography
+          openssl genrsa -out /tmp/dist.key 2048
+          openssl req -new -key /tmp/dist.key -out /tmp/dist.csr -subj "/CN=Wromble CI/O=Wromble/C=DK"
+
+          python3 - << 'PY'
+          import jwt, time, json, os, urllib.request, urllib.error
+          kid=os.environ['API_KEY_ID']; iss=os.environ['API_ISSUER_ID']
+          key=open(os.path.expanduser(f'~/private_keys/AuthKey_{kid}.p8')).read()
+          def tok(): return jwt.encode({'iss':iss,'iat':int(time.time()),'exp':int(time.time())+900,'aud':'appstoreconnect-v1'},key,algorithm='ES256',headers={'kid':kid,'typ':'JWT'})
+          def api(m,u,b=None):
+              H={'Authorization':f'Bearer {tok()}','Content-Type':'application/json'}
+              data=json.dumps(b).encode() if b else None
+              req=urllib.request.Request(u,data=data,headers=H,method=m)
+              try:
+                  r=urllib.request.urlopen(req); raw=r.read().decode(); return r.status,(json.loads(raw) if raw else {})
+              except urllib.error.HTTPError as e: return e.code, json.loads(e.read().decode() or '{}')
+          BASE='https://api.appstoreconnect.apple.com/v1'
+          st,res=api('GET',BASE+'/bundleIds?filter%5Bidentifier%5D=dk.wromble.app'); bid=res['data'][0]['id']
+          api('POST',BASE+'/bundleIdCapabilities',{'data':{'type':'bundleIdCapabilities','attributes':{'capabilityType':'PUSH_NOTIFICATIONS'},'relationships':{'bundleId':{'data':{'type':'bundleIds','id':bid}}}}})
+          # free a slot only if at the 2-cert limit
+          st,res=api('GET',BASE+'/certificates?filter%5BcertificateType%5D=IOS_DISTRIBUTION&limit=200')
+          certs=res.get('data',[])
+          if len(certs)>=2:
+              d,_=api('DELETE',BASE+f"/certificates/{certs[0]['id']}"); print('freed slot',certs[0]['id'],d)
+          csr=open('/tmp/dist.csr').read()
+          st,res=api('POST',BASE+'/certificates',{'data':{'type':'certificates','attributes':{'certificateType':'IOS_DISTRIBUTION','csrContent':csr}}})
+          if st>=400: print(json.dumps(res)[:800]); raise SystemExit(1)
+          cert=res['data']; cert_id=cert['id']
+          open('/tmp/cert.b64','w').write(cert['attributes']['certificateContent'])
+          # profile bound to this cert
+          st,res=api('GET',BASE+'/profiles?filter%5Bname%5D=Wromble%20CI%20AppStore')
+          for p in res.get('data',[]): api('DELETE',BASE+f"/profiles/{p['id']}")
+          st,res=api('POST',BASE+'/profiles',{'data':{'type':'profiles','attributes':{'name':'Wromble CI AppStore','profileType':'IOS_APP_STORE'},'relationships':{'bundleId':{'data':{'type':'bundleIds','id':bid}},'certificates':{'data':[{'type':'certificates','id':cert_id}]}}}})
+          if st>=400: print(json.dumps(res)[:800]); raise SystemExit(1)
+          open('/tmp/profile.b64','w').write(res['data']['attributes']['profileContent'])
+          open('/tmp/cert_id.txt','w').write(cert_id)
+          print('cert_id',cert_id)
+          PY
+
+          # build the .p12 (private key + issued cert)
+          base64 -D -i /tmp/cert.b64 -o /tmp/dist.cer
+          openssl x509 -inform DER -in /tmp/dist.cer -out /tmp/dist.pem
+          openssl pkcs12 -export -inkey /tmp/dist.key -in /tmp/dist.pem -out /tmp/dist.p12 -passout pass:$P12PASS -name wromble_dist
+
+          # assemble base64 payloads then AES-encrypt the whole bundle with BOOT_PASS
+          base64 -i /tmp/dist.p12 -o /tmp/p12.b64
+          {
+            echo "P12_B64=$(cat /tmp/p12.b64 | tr -d '\n')"
+            echo "PROFILE_B64=$(cat /tmp/profile.b64 | tr -d '\n')"
+            echo "CERT_ID=$(cat /tmp/cert_id.txt)"
+            echo "P12PASS=$P12PASS"
+          } > /tmp/bundle.env
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/bundle.env -out /tmp/bundle.enc -pass env:BOOT_PASS
+          echo "encrypted bundle ready"
+
+      - name: Upload encrypted bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: cert-bundle
+          path: /tmp/bundle.enc
+          retention-days: 1
