@@ -1896,19 +1896,27 @@ struct DriverDashboardView: View {
     func deliver(_ order: DriverOrder) {
         actionId = order.id
         guard let url = URL(string: "\(baseURL)/api/app-driver-deliver.php") else { actionId = nil; return }
+        // Send chaufføerens aktuelle position med, saa serveren kan tjekke 3 km-radius.
+        var body: [String: Any] = ["rider_id": session.id, "company_id": session.companyId, "order_id": order.id]
+        if let l = loc.location {
+            body["latitude"] = l.coordinate.latitude
+            body["longitude"] = l.coordinate.longitude
+        }
         var req = URLRequest(url: url); req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["rider_id": session.id, "company_id": session.companyId, "order_id": order.id])
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         URLSession.shared.dataTask(with: req) { data, _, _ in
             DispatchQueue.main.async {
                 actionId = nil
-                if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any], j["success"] as? Bool == true {
+                let j = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                if j?["success"] as? Bool == true {
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     orders.removeAll { $0.id == order.id }
                     showToast("Ordre #\(order.id) leveret")
                     Task { await loadHistory() }   // opdater historik med det samme
                 } else {
-                    showToast("Kunne ikke opdatere ordren")
+                    // Vis serverens besked (fx "Du er 10,2 km fra leveringsadressen ...")
+                    showToast((j?["error"] as? String) ?? "Kunne ikke opdatere ordren")
                 }
             }
         }.resume()
