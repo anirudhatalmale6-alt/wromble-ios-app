@@ -1827,6 +1827,7 @@ struct CompanyOrdersView: View {
     @State private var knownOrderIds: Set<Int> = []
     @State private var knownOverdueIds: Set<Int> = []
     @State private var didInitialLoad = false
+    @State private var alarmSeconds = 5   // firmaets valgte alarm-varighed (0 = fra)
 
     var newOrders: [CompanyOrder] { orders.filter { $0.isNew } }
     var activeOrders: [CompanyOrder] { orders.filter { !$0.isNew } }
@@ -1902,9 +1903,20 @@ struct CompanyOrdersView: View {
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
         .task { await load() }
-        .onAppear { startAutoRefresh() }
-        .onDisappear { refreshTimer?.invalidate(); refreshTimer = nil }
+        .onAppear { startAutoRefresh(); loadAlarmSeconds() }
+        .onDisappear { refreshTimer?.invalidate(); refreshTimer = nil; WrombleAlarm.shared.stop() }
         .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
+    }
+
+    // Henter firmaets valgte alarm-varighed (0/5/10/15 sek).
+    func loadAlarmSeconds() {
+        guard let url = URL(string: "\(baseURL)/api/app-company-alarm.php?company_id=\(session.companyId)") else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let s = j["alarm_seconds"] as? Int {
+                DispatchQueue.main.async { alarmSeconds = s }
+            }
+        }.resume()
     }
 
     // Henter ordrelisten hvert 15. sekund, saa nye bestillinger dukker op af sig
@@ -1917,8 +1929,10 @@ struct CompanyOrdersView: View {
     }
 
     // Giver lyd + vibration naar en helt ny ordre er kommet ind mens siden er aaben.
+    // Varigheden styres af firmaets indstilling (alarmSeconds). 0 = lyd slaaet fra.
     func alertNewOrder() {
-        WrombleAlarm.shared.start()   // hoej alarm ved ny ordre
+        guard alarmSeconds > 0 else { return }
+        WrombleAlarm.shared.start(seconds: Double(alarmSeconds))
     }
 
     // Notifikation + besked til forretningen naar en leverance er forsinket.
@@ -2112,6 +2126,8 @@ struct CompanyOrdersView: View {
     }
 
     func act(_ order: CompanyOrder, _ action: String) {
+        // Stop alarmen med det samme naar forretningen reagerer paa ordren.
+        WrombleAlarm.shared.stop()
         actionId = order.id
         guard let url = URL(string: "\(baseURL)/api/app-company-order-action.php") else { actionId = nil; return }
         var req = URLRequest(url: url); req.httpMethod = "POST"
@@ -2152,6 +2168,8 @@ struct CompanyDashboardView: View {
     @State private var busyLoading = true
     @State private var autoAccept = true
     @State private var autoLoading = true
+    @State private var alarmSeconds = 5
+    @State private var alarmLoading = true
 
     var body: some View {
         List {
@@ -2190,6 +2208,19 @@ struct CompanyDashboardView: View {
                 .tint(wrombleRed)
                 .disabled(busyLoading)
             }
+            Section(header: Text("Lyd ved ny ordre"), footer: Text(alarmSeconds == 0 ? "Der afspilles ingen lyd ved nye ordrer." : "Alarmen spiller i \(alarmSeconds) sekunder ved en ny ordre og stopper med det samme, naar du accepterer.")) {
+                Picker("Alarm-varighed", selection: Binding(
+                    get: { alarmSeconds },
+                    set: { newVal in alarmSeconds = newVal; setAlarm(newVal) }
+                )) {
+                    Text("Fra").tag(0)
+                    Text("5s").tag(5)
+                    Text("10s").tag(10)
+                    Text("15s").tag(15)
+                }
+                .pickerStyle(.segmented)
+                .disabled(alarmLoading)
+            }
             Section(header: Text("Administrer")) {
                 NavigationLink { CompanyOrdersView(session: session) } label: {
                     Label("Ordrer", systemImage: "bag.fill").foregroundColor(.primary)
@@ -2210,7 +2241,31 @@ struct CompanyDashboardView: View {
         }
         .navigationTitle(session.name.isEmpty ? "Forretning" : session.name)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { loadBusy(); loadAutoAccept() }
+        .onAppear { loadBusy(); loadAutoAccept(); loadAlarm() }
+    }
+
+    func loadAlarm() {
+        guard let url = URL(string: "\(baseURL)/api/app-company-alarm.php?company_id=\(session.companyId)") else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            var s = 5
+            if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                s = j["alarm_seconds"] as? Int ?? 5
+            }
+            DispatchQueue.main.async { alarmSeconds = s; alarmLoading = false }
+        }.resume()
+    }
+
+    func setAlarm(_ value: Int) {
+        guard !alarmLoading else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        // Kort forhaandsvisning saa man hoerer valget (undtagen Fra).
+        if value > 0 { WrombleAlarm.shared.start(seconds: min(Double(value), 2.0)) } else { WrombleAlarm.shared.stop() }
+        guard let url = URL(string: "\(baseURL)/api/app-company-alarm.php") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["company_id": session.companyId, "alarm_seconds": value])
+        URLSession.shared.dataTask(with: req).resume()
     }
 
     func loadAutoAccept() {
@@ -5768,6 +5823,93 @@ struct TrackPin: Identifiable {
     let isCustomer: Bool
 }
 
+// Professionel leverings-illustration: restaurant til venstre, kundens hus til hoejre,
+// en roed rute imellem, og en bil/bud der bevaeger sig langs ruten efter ordrens status.
+// Ingen rigtigt kort - ren, hurtig og altid paen uanset adresse.
+struct DeliveryRouteView: View {
+    let stage: Int          // 0=Modtaget, 1=Bekraeftet, 2=Paa vej, 3=Leveret
+    let isDelivery: Bool
+    let companyName: String
+
+    private var t: CGFloat {
+        switch stage {
+        case 0: return 0.03
+        case 1: return 0.22
+        case 2: return 0.62
+        default: return 1.0
+        }
+    }
+
+    private func bezier(_ p0: CGPoint, _ c: CGPoint, _ p1: CGPoint, _ tt: CGFloat) -> CGPoint {
+        let mt = 1 - tt
+        return CGPoint(x: mt*mt*p0.x + 2*mt*tt*c.x + tt*tt*p1.x,
+                       y: mt*mt*p0.y + 2*mt*tt*c.y + tt*tt*p1.y)
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            let y = h * 0.64
+            let startX = w * 0.16, endX = w * 0.84
+            let ctrl = CGPoint(x: w * 0.5, y: y - h * 0.34)
+            let p0 = CGPoint(x: startX, y: y), p1 = CGPoint(x: endX, y: y)
+            let car = bezier(p0, ctrl, p1, t)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(LinearGradient(colors: [Color(red: 0.92, green: 0.96, blue: 1.0),
+                                                  Color(red: 0.95, green: 0.98, blue: 0.96)],
+                                         startPoint: .top, endPoint: .bottom))
+
+                // Fuld rute (stiplet, grå)
+                Path { p in p.move(to: p0); p.addQuadCurve(to: p1, control: ctrl) }
+                    .stroke(Color.gray.opacity(0.35), style: StrokeStyle(lineWidth: 4, lineCap: .round, dash: [2, 9]))
+
+                // Tilbagelagt del (heltrukket, rød)
+                Path { p in p.move(to: p0); p.addQuadCurve(to: p1, control: ctrl) }
+                    .trim(from: 0, to: max(0.02, t))
+                    .stroke(wrombleRed, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .animation(.easeInOut(duration: 0.6), value: t)
+
+                marker(system: "fork.knife", tint: wrombleRed).position(x: startX, y: y)
+                marker(system: isDelivery ? "house.fill" : "bag.fill", tint: .blue).position(x: endX, y: y)
+
+                // Køretøj/bud der bevæger sig langs ruten
+                ZStack {
+                    Circle().fill(.white).frame(width: 42, height: 42)
+                        .shadow(color: .black.opacity(0.15), radius: 3, y: 1)
+                    Image(systemName: isDelivery ? "car.fill" : "bag.fill")
+                        .font(.system(size: 18, weight: .bold)).foregroundColor(wrombleRed)
+                }
+                .position(x: car.x, y: car.y - 24)
+                .animation(.easeInOut(duration: 0.6), value: t)
+
+                // Etiketter i bunden
+                VStack {
+                    Spacer()
+                    HStack {
+                        Text(companyName.isEmpty ? "Restaurant" : companyName)
+                            .font(.caption2.bold()).foregroundColor(.primary).lineLimit(1)
+                        Spacer()
+                        Text(isDelivery ? "Dig" : "Afhentning")
+                            .font(.caption2.bold()).foregroundColor(.primary)
+                    }
+                    .padding(.horizontal, 20).padding(.bottom, 10)
+                }
+            }
+        }
+        .frame(height: 190)
+    }
+
+    @ViewBuilder private func marker(system: String, tint: Color) -> some View {
+        ZStack {
+            Circle().fill(.white).frame(width: 34, height: 34)
+                .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+            Image(systemName: system).font(.system(size: 15, weight: .bold)).foregroundColor(tint)
+        }
+    }
+}
+
 struct OrderTrackingView: View {
     let orderId: Int
     var initialCompany: String = ""
@@ -5871,36 +6013,26 @@ struct OrderTrackingView: View {
                 .cornerRadius(14)
                 .padding(.horizontal, 20)
 
-                // Kort: vis hvor ordren er (restauranten - og leveringsadressen ved levering).
-                if !mapPins.isEmpty && !isRejected {
+                // Leverings-illustration: ren, professionel visning (restaurant -> roed rute -> hus)
+                // i stedet for et rigtigt kort. Bilen flytter sig langs ruten efter ordrens status.
+                if !isRejected, let s = status {
                     VStack(spacing: 10) {
-                        Map(coordinateRegion: $mapRegion, annotationItems: mapPins) { pin in
-                            MapAnnotation(coordinate: pin.coordinate) {
-                                VStack(spacing: 2) {
-                                    Image(systemName: pin.isCustomer ? "house.fill" : "fork.knife.circle.fill")
-                                        .font(.system(size: 26))
-                                        .foregroundColor(pin.isCustomer ? .blue : wrombleRed)
-                                        .background(Circle().fill(.white).frame(width: 22, height: 22))
-                                    Text(pin.isCustomer ? "Dig" : (status?.companyName ?? "Restaurant"))
-                                        .font(.caption2.bold())
-                                        .padding(.horizontal, 5).padding(.vertical, 1)
-                                        .background(Color(.systemBackground).opacity(0.9)).cornerRadius(4)
-                                }
-                            }
-                        }
-                        .frame(height: 220)
-                        .cornerRadius(14)
-                        .allowsHitTesting(false)
+                        DeliveryRouteView(stage: stage,
+                                          isDelivery: s.isDelivery,
+                                          companyName: s.companyName.isEmpty ? initialCompany : s.companyName)
 
-                        Button(action: { openInMaps() }) {
-                            HStack {
-                                Image(systemName: "arrow.triangle.turn.up.right.circle.fill")
-                                Text(status?.isDelivery == true ? "Åbn restauranten i Kort" : "Rutevejledning til restauranten")
-                                    .font(.subheadline.weight(.semibold))
+                        // Valgfri: aabn adressen i kort-app hvis kunden selv vil have rutevejledning.
+                        if !mapPins.isEmpty {
+                            Button(action: { openInMaps() }) {
+                                HStack {
+                                    Image(systemName: "arrow.triangle.turn.up.right.circle.fill")
+                                    Text(s.isDelivery ? "Åbn adressen i Kort (rutevejledning)" : "Rutevejledning til restauranten")
+                                        .font(.subheadline.weight(.semibold))
+                                }
+                                .foregroundColor(wrombleRed)
+                                .frame(maxWidth: .infinity).padding(.vertical, 12)
+                                .background(wrombleRed.opacity(0.10)).cornerRadius(12)
                             }
-                            .foregroundColor(wrombleRed)
-                            .frame(maxWidth: .infinity).padding(.vertical, 12)
-                            .background(wrombleRed.opacity(0.10)).cornerRadius(12)
                         }
                     }
                     .padding(.horizontal, 20)
