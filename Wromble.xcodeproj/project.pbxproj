@@ -10,7 +10,37 @@
 		A1000001 /* WrombleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001; };
 		A1000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002; };
 		A1000003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000003; };
+		A1000010 /* WrombleDeliveryAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000020; };
+		A1000011 /* WrombleDeliveryAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000020; };
+		A1000012 /* WrombleWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000021; };
+		A1000013 /* WrombleDeliveryLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000022; };
+		A1000014 /* LiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000024; };
+		A1000015 /* WrombleWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A2000030; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A5000011 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A8000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A5000002;
+			remoteInfo = WrombleWidgetsExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A6000020 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A1000015 /* WrombleWidgetsExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		A2000001 /* WrombleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WrombleApp.swift; sourceTree = "<group>"; };
@@ -19,10 +49,23 @@
 		A2000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000005 /* Wromble.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Wromble.entitlements; sourceTree = "<group>"; };
 		A2000010 /* Wromble.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Wromble.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000020 /* WrombleDeliveryAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WrombleDeliveryAttributes.swift; sourceTree = "<group>"; };
+		A2000021 /* WrombleWidgetsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WrombleWidgetsBundle.swift; sourceTree = "<group>"; };
+		A2000022 /* WrombleDeliveryLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WrombleDeliveryLiveActivity.swift; sourceTree = "<group>"; };
+		A2000023 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000024 /* LiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityManager.swift; sourceTree = "<group>"; };
+		A2000030 /* WrombleWidgetsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WrombleWidgetsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A3000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A3000002 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -35,7 +78,9 @@
 		A4000001 = {
 			isa = PBXGroup;
 			children = (
+				A4000011 /* Shared */,
 				A4000002 /* Wromble */,
+				A4000010 /* WrombleWidgets */,
 				A4000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -45,6 +90,7 @@
 			children = (
 				A2000001 /* WrombleApp.swift */,
 				A2000002 /* ContentView.swift */,
+				A2000024 /* LiveActivityManager.swift */,
 				A2000003 /* Assets.xcassets */,
 				A2000004 /* Info.plist */,
 				A2000005 /* Wromble.entitlements */,
@@ -56,8 +102,27 @@
 			isa = PBXGroup;
 			children = (
 				A2000010 /* Wromble.app */,
+				A2000030 /* WrombleWidgetsExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A4000010 /* WrombleWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				A2000021 /* WrombleWidgetsBundle.swift */,
+				A2000022 /* WrombleDeliveryLiveActivity.swift */,
+				A2000023 /* Info.plist */,
+			);
+			path = WrombleWidgets;
+			sourceTree = "<group>";
+		};
+		A4000011 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				A2000020 /* WrombleDeliveryAttributes.swift */,
+			);
+			path = Shared;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -70,15 +135,34 @@
 				A6000001 /* Sources */,
 				A3000001 /* Frameworks */,
 				A6000002 /* Resources */,
+				A6000020 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A5000010 /* PBXTargetDependency */,
 			);
 			name = Wromble;
 			productName = Wromble;
 			productReference = A2000010 /* Wromble.app */;
 			productType = "com.apple.product-type.application";
+		};
+		A5000002 /* WrombleWidgetsExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A7000005;
+			buildPhases = (
+				A6000010 /* Sources */,
+				A3000002 /* Frameworks */,
+				A6000011 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = WrombleWidgetsExtension;
+			productName = WrombleWidgetsExtension;
+			productReference = A2000030 /* WrombleWidgetsExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -91,6 +175,9 @@
 				LastUpgradeCheck = 1540;
 				TargetAttributes = {
 					A5000001 = {
+						CreatedOnToolsVersion = 15.4;
+					};
+					A5000002 = {
 						CreatedOnToolsVersion = 15.4;
 					};
 				};
@@ -110,6 +197,7 @@
 			projectRoot = "";
 			targets = (
 				A5000001 /* Wromble */,
+				A5000002 /* WrombleWidgetsExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -123,6 +211,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A6000011 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -132,10 +227,30 @@
 			files = (
 				A1000001 /* WrombleApp.swift in Sources */,
 				A1000002 /* ContentView.swift in Sources */,
+				A1000014 /* LiveActivityManager.swift in Sources */,
+				A1000010 /* WrombleDeliveryAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A6000010 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000012 /* WrombleWidgetsBundle.swift in Sources */,
+				A1000013 /* WrombleDeliveryLiveActivity.swift in Sources */,
+				A1000011 /* WrombleDeliveryAttributes.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A5000010 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A5000002 /* WrombleWidgetsExtension */;
+			targetProxy = A5000011 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A9000001 /* Debug */ = {
@@ -204,7 +319,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Wromble/Wromble.entitlements;
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = ZS527A3WH2;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -222,6 +337,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dk.wromble.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "Wromble CI AppStore";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -234,7 +350,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Wromble/Wromble.entitlements;
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = ZS527A3WH2;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -252,6 +368,63 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dk.wromble.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "Wromble CI AppStore";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A9000010 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 52;
+				DEVELOPMENT_TEAM = ZS527A3WH2;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WrombleWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Wromble;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = dk.wromble.app.WrombleWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "Wromble CI Widget AppStore";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A9000011 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 52;
+				DEVELOPMENT_TEAM = ZS527A3WH2;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = WrombleWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Wromble;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = dk.wromble.app.WrombleWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "Wromble CI Widget AppStore";
+				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -275,6 +448,15 @@
 			buildConfigurations = (
 				A9000003 /* Debug */,
 				A9000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A7000005 /* Build configuration list for WrombleWidgetsExtension */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A9000010 /* Debug */,
+				A9000011 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

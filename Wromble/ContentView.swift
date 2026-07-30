@@ -6428,6 +6428,12 @@ struct OrderTrackingView: View {
                 status = s
                 isLoading = false
                 centerMapIfNeeded(s)
+                // Live Activity (laaseskaerm + Dynamic Island): start/opdater for
+                // leveringsordrer, saa kunden foelger status live - ligesom Wolt.
+                if #available(iOS 16.1, *), s.isDelivery, s.stage >= 0 {
+                    WrombleLiveActivityManager.sync(orderId: orderId, companyName: s.companyName,
+                        stage: s.stage, statusLabel: s.label, etaText: s.etaText)
+                }
             }
         } catch {
             await MainActor.run { isLoading = false }

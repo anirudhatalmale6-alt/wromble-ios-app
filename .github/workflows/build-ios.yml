@@ -136,8 +136,28 @@ jobs:
               print(json.dumps(res)[:800]); raise SystemExit(1)
           open('/tmp/profile.b64','w').write(res['data']['attributes']['profileContent'])
           print('profile ready for cert', cid)
+
+          # --- Widget-extension: eget bundle-id + eget App Store-profil (samme cert) ---
+          WBID='dk.wromble.app.WrombleWidgets'
+          st,res=api_retry('GET',BASE+'/bundleIds?filter%5Bidentifier%5D='+WBID)
+          wbid=None
+          if res.get('data'): wbid=res['data'][0]['id']
+          if not wbid:
+              st,res=api('POST',BASE+'/bundleIds',{'data':{'type':'bundleIds','attributes':{'identifier':WBID,'name':'Wromble Widgets','platform':'IOS'}}})
+              if st>=400 or not res.get('data'): print('widget bundleId create failed:',st,json.dumps(res)[:400]); raise SystemExit(1)
+              wbid=res['data']['id']; print('created widget bundleId', wbid)
+          else:
+              print('widget bundleId exists', wbid)
+          st,res=api('GET',BASE+'/profiles?filter%5Bname%5D=Wromble%20CI%20Widget%20AppStore')
+          for p in res.get('data',[]): api('DELETE',BASE+f"/profiles/{p['id']}")
+          st,res=api_retry('POST',BASE+'/profiles',{'data':{'type':'profiles','attributes':{'name':'Wromble CI Widget AppStore','profileType':'IOS_APP_STORE'},'relationships':{'bundleId':{'data':{'type':'bundleIds','id':wbid}},'certificates':{'data':[{'type':'certificates','id':cid}]}}}})
+          if st>=400 or not (res.get('data') or {}).get('attributes',{}).get('profileContent'):
+              print('widget profile failed:',json.dumps(res)[:800]); raise SystemExit(1)
+          open('/tmp/profile_widget.b64','w').write(res['data']['attributes']['profileContent'])
+          print('widget profile ready for cert', cid)
           PY
           base64 -D -i /tmp/profile.b64 -o /tmp/wromble.mobileprovision
+          base64 -D -i /tmp/profile_widget.b64 -o /tmp/wromble_widget.mobileprovision
 
           # 3) Temporary keychain holding the signing identity
           security create-keychain -p ci build.keychain
@@ -148,12 +168,16 @@ jobs:
           security list-keychains -d user -s build.keychain login.keychain
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
 
-          # Install the provisioning profile
+          # Install the provisioning profiles (app + widget-extension)
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           security cms -D -i /tmp/wromble.mobileprovision > /tmp/profile.plist
           UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /tmp/profile.plist)
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp /tmp/wromble.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
-          echo "Installed profile UUID $UUID"
+          echo "Installed app profile UUID $UUID"
+          security cms -D -i /tmp/wromble_widget.mobileprovision > /tmp/profile_widget.plist
+          WUUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /tmp/profile_widget.plist)
+          cp /tmp/wromble_widget.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$WUUID.mobileprovision
+          echo "Installed widget profile UUID $WUUID"
 
           # Record the exact signing identity name
           IDENTITY=$(security find-identity -v -p codesigning build.keychain | grep -oE '"[^"]+"' | head -1 | tr -d '"')
@@ -162,6 +186,9 @@ jobs:
 
       - name: Build & Archive (manual signing)
         run: |
+          # To-target (app + widget-extension) manuel signering: profil vaelges PER
+          # target i pbxproj (PROVISIONING_PROFILE_SPECIFIER), saa vi IKKE overskriver
+          # den globalt her (ellers ville widget'en faa app'ens profil og fejle).
           xcodebuild archive \
             -project Wromble.xcodeproj \
             -scheme Wromble \
@@ -170,7 +197,6 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
-            PROVISIONING_PROFILE_SPECIFIER="Wromble CI AppStore" \
             DEVELOPMENT_TEAM=ZS527A3WH2 \
             OTHER_CODE_SIGN_FLAGS="--keychain build.keychain"
 
@@ -195,6 +221,8 @@ jobs:
             <dict>
               <key>dk.wromble.app</key>
               <string>Wromble CI AppStore</string>
+              <key>dk.wromble.app.WrombleWidgets</key>
+              <string>Wromble CI Widget AppStore</string>
             </dict>
           </dict>
           </plist>
