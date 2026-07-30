@@ -1203,12 +1203,14 @@ struct CompanyOrder: Codable, Identifiable {
     let overdue: Bool?          // true naar den aftalte tid er passeret og ordren ikke er leveret
     let etaText: String?        // live-ETA fra chaufføeren, fx "ca. 8 min." (tom hvis ukendt)
     let riderName: String?      // navn paa chaufføeren der er paa vej
+    let riderPhone: String?     // chaufføerens mobilnummer (vises til forretningen)
     enum CodingKeys: String, CodingKey {
         case id, customer, phone, address, amount, delivery, payment, table, status, items, delivered, date, overdue
         case isNew = "is_new"
         case wantedTime = "wanted_time"
         case etaText = "eta_text"
         case riderName = "rider_name"
+        case riderPhone = "rider_phone"
     }
 }
 
@@ -1498,12 +1500,25 @@ final class WrombleAlarm {
 struct AlarmSettingsSheet: View {
     @Binding var seconds: Int
     let showDuration: Bool
+    var riderId: Int = 0   // >0 = chauffoer: vis felt til eget mobilnummer
     @AppStorage("wr_alarm_melody") private var melody = 0
     @Environment(\.dismiss) private var dismiss
+    @State private var phone = ""
+    @State private var phoneSaved = false
 
     var body: some View {
         NavigationView {
             Form {
+                if riderId > 0 {
+                    Section(header: Text("Dit mobilnummer"),
+                            footer: Text("Vises til forretningen paa ordren, saa de kan kontakte dig.")) {
+                        TextField("fx 12 34 56 78", text: $phone)
+                            .keyboardType(.phonePad)
+                            .onChange(of: phone) { _ in phoneSaved = false }
+                        Button(phoneSaved ? "Gemt ✓" : "Gem nummer") { savePhone() }
+                            .foregroundColor(wrombleRed).fontWeight(.bold)
+                    }
+                }
                 if showDuration {
                     Section(header: Text("Varighed"),
                             footer: Text(seconds == 0 ? "Der afspilles ingen lyd ved nye leverancer." : "Alarmen spiller i \(seconds) sekunder.")) {
@@ -1528,14 +1543,35 @@ struct AlarmSettingsSheet: View {
                     }
                 }
             }
-            .navigationTitle("Lyd-indstillinger")
+            .navigationTitle(riderId > 0 ? "Indstillinger" : "Lyd-indstillinger")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Færdig") { WrombleAlarm.shared.stop(); dismiss() }
                 }
             }
+            .onAppear { if riderId > 0 { loadPhone() } }
         }
+    }
+
+    private func loadPhone() {
+        guard riderId > 0, let url = URL(string: "\(baseURL)/api/app-driver-phone.php?rider_id=\(riderId)") else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let p = j["phone"] as? String {
+                DispatchQueue.main.async { phone = p }
+            }
+        }.resume()
+    }
+
+    private func savePhone() {
+        guard riderId > 0, let url = URL(string: "\(baseURL)/api/app-driver-phone.php") else { return }
+        var req = URLRequest(url: url); req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["rider_id": riderId, "phone": phone])
+        URLSession.shared.dataTask(with: req) { _, _, _ in
+            DispatchQueue.main.async { phoneSaved = true }
+        }.resume()
     }
 }
 
@@ -1598,7 +1634,7 @@ struct DriverDashboardView: View {
             }
         }
         .sheet(isPresented: $showAlarmSettings) {
-            AlarmSettingsSheet(seconds: $driverAlarmSeconds, showDuration: true)
+            AlarmSettingsSheet(seconds: $driverAlarmSeconds, showDuration: true, riderId: session.id)
         }
         .refreshable { await load() }
         .task { await load() }
@@ -1957,6 +1993,7 @@ struct CompanyOrdersView: View {
     @State private var knownOverdueIds: Set<Int> = []
     @State private var didInitialLoad = false
     @State private var alarmSeconds = 5   // firmaets valgte alarm-varighed (0 = fra)
+    @State private var cancelTarget: CompanyOrder?   // accepteret ordre der skal annulleres (bekraeftelse)
 
     var newOrders: [CompanyOrder] { orders.filter { $0.isNew } }
     var activeOrders: [CompanyOrder] { orders.filter { !$0.isNew } }
@@ -2035,6 +2072,15 @@ struct CompanyOrdersView: View {
         .onAppear { startAutoRefresh(); loadAlarmSeconds() }
         .onDisappear { refreshTimer?.invalidate(); refreshTimer = nil; WrombleAlarm.shared.stop() }
         .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
+        .alert("Annuller ordre?", isPresented: Binding(get: { cancelTarget != nil }, set: { if !$0 { cancelTarget = nil } })) {
+            Button("Fortryd", role: .cancel) { cancelTarget = nil }
+            Button("Annuller ordre", role: .destructive) {
+                if let o = cancelTarget { act(o, "cancel") }
+                cancelTarget = nil
+            }
+        } message: {
+            Text("Kunden faar besked om at ordre #\(cancelTarget?.id ?? 0) er annulleret. Dette kan ikke fortrydes.")
+        }
     }
 
     // Henter firmaets valgte alarm-varighed (0/5/10/15 sek).
@@ -2132,6 +2178,14 @@ struct CompanyOrdersView: View {
                     Label("\(who)paa vej – \(eta)", systemImage: "bicycle")
                         .font(.caption.weight(.semibold)).foregroundColor(.blue)
                 }
+                if let rp = order.riderPhone, !rp.isEmpty {
+                    Button(action: {
+                        if let u = URL(string: "tel:\(rp.replacingOccurrences(of: " ", with: ""))") { UIApplication.shared.open(u) }
+                    }) {
+                        Label("Chauffoer: \(rp)", systemImage: "phone.fill")
+                            .font(.caption.weight(.semibold)).foregroundColor(wrombleRed)
+                    }
+                }
             }
 
             if !order.customer.isEmpty {
@@ -2181,9 +2235,22 @@ struct CompanyOrdersView: View {
                 }
                 .padding(.top, 2)
             } else {
-                HStack(spacing: 6) {
-                    Image(systemName: order.delivered ? "checkmark.circle.fill" : "checkmark.seal.fill").foregroundColor(.green)
-                    Text(order.delivered ? "Leveret" : "Accepteret").font(.subheadline.weight(.semibold)).foregroundColor(.green)
+                VStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: order.delivered ? "checkmark.circle.fill" : "checkmark.seal.fill").foregroundColor(.green)
+                        Text(order.delivered ? "Leveret" : "Accepteret").font(.subheadline.weight(.semibold)).foregroundColor(.green)
+                        Spacer()
+                    }
+                    // Accepteret ordre der er i gang: forretningen kan annullere den.
+                    if !order.delivered {
+                        Button(action: { cancelTarget = order }) {
+                            Text("Annuller ordre").font(.subheadline.weight(.bold))
+                                .frame(maxWidth: .infinity).padding(.vertical, 11)
+                                .foregroundColor(wrombleRed)
+                                .background(wrombleRed.opacity(0.10)).cornerRadius(10)
+                        }
+                        .disabled(actionId != nil)
+                    }
                 }
                 .padding(.top, 2)
             }
