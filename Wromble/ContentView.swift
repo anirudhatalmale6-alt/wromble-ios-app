@@ -1551,6 +1551,7 @@ struct DriverDashboardView: View {
     @State private var knownOrderIds: Set<Int> = []
     @State private var didInitialLoad = false
     @State private var mapsOrder: DriverOrder?
+    @State private var tooFarMessage: String?   // vises som tydelig dialog naar leveringen afvises (uden for 3 km)
     @State private var tab = 0   // 0 = Aktive, 1 = Historik
     @State private var history: [DriverOrder] = []
     @State private var historyLoading = false
@@ -1610,6 +1611,13 @@ struct DriverDashboardView: View {
                 Button("Google Maps") { openGoogleMaps(o); mapsOrder = nil }
                 Button("Annuller", role: .cancel) { mapsOrder = nil }
             }
+        }
+        // Tydelig dialog naar leveringen ikke kan markeres, fordi chaufføeren er uden for 3 km.
+        // (Erstatter den korte toast, som var nem at overse - saa man ikke tror ordren blev leveret.)
+        .alert("Du er for langt fra kunden", isPresented: Binding(get: { tooFarMessage != nil }, set: { if !$0 { tooFarMessage = nil } })) {
+            Button("OK", role: .cancel) { tooFarMessage = nil }
+        } message: {
+            Text(tooFarMessage ?? "")
         }
     }
 
@@ -1918,8 +1926,11 @@ struct DriverDashboardView: View {
                     orders.removeAll { $0.id == order.id }
                     showToast("Ordre #\(order.id) leveret")
                     Task { await loadHistory() }   // opdater historik med det samme
+                } else if j?["too_far"] as? Bool == true {
+                    // Uden for 3 km: vis en tydelig dialog, saa chaufføeren ikke tror ordren blev leveret.
+                    tooFarMessage = (j?["error"] as? String)
+                        ?? "Du skal vaere inden for 3 km af leveringsadressen for at markere ordren som leveret."
                 } else {
-                    // Vis serverens besked (fx "Du er 10,2 km fra leveringsadressen ...")
                     showToast((j?["error"] as? String) ?? "Kunne ikke opdatere ordren")
                 }
             }
