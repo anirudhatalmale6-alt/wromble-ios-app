@@ -6276,7 +6276,7 @@ struct OrderTrackingView: View {
     }
 
     // Et punkt paa live-kortet (chauffoer / kunde / restaurant).
-    private struct TrackPin: Identifiable {
+    private struct LivePin: Identifiable {
         let id = UUID()
         let coord: CLLocationCoordinate2D
         let icon: String
@@ -6287,10 +6287,10 @@ struct OrderTrackingView: View {
         let driver = CLLocationCoordinate2D(latitude: s.driverLat, longitude: s.driverLng)
         let hasDest = s.customerLat != 0 || s.customerLng != 0
         let dest = CLLocationCoordinate2D(latitude: s.customerLat, longitude: s.customerLng)
-        var pins: [TrackPin] = [TrackPin(coord: driver, icon: "bicycle", color: wrombleRed)]
-        if hasDest { pins.append(TrackPin(coord: dest, icon: "house.fill", color: .blue)) }
+        var pins: [LivePin] = [LivePin(coord: driver, icon: "bicycle", color: wrombleRed)]
+        if hasDest { pins.append(LivePin(coord: dest, icon: "house.fill", color: .blue)) }
         if s.companyLat != 0 || s.companyLng != 0 {
-            pins.append(TrackPin(coord: CLLocationCoordinate2D(latitude: s.companyLat, longitude: s.companyLng),
+            pins.append(LivePin(coord: CLLocationCoordinate2D(latitude: s.companyLat, longitude: s.companyLng),
                                  icon: "fork.knife", color: .gray))
         }
         let region: MKCoordinateRegion
