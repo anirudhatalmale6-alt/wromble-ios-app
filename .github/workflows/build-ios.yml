@@ -115,13 +115,25 @@ jobs:
               except urllib.error.HTTPError as e: return e.code, json.loads(e.read().decode() or '{}')
           BASE='https://api.appstoreconnect.apple.com/v1'
           cid=os.environ['CERT_ID']
-          st,res=api('GET',BASE+'/bundleIds?filter%5Bidentifier%5D=dk.wromble.app'); bid=res['data'][0]['id']
+          def api_retry(m,u,b=None,tries=5):
+              # Apple's API returns transient 5xx / empty bodies; retry so one blip
+              # doesn't fail the whole build (this caused a KeyError 'data' once).
+              last=None
+              for i in range(tries):
+                  st,res=api(m,u,b)
+                  if st<500 and isinstance(res,dict) and 'data' in res: return st,res
+                  last=(st,res); time.sleep(3*(i+1))
+              return last
+          st,res=api_retry('GET',BASE+'/bundleIds?filter%5Bidentifier%5D=dk.wromble.app')
+          if not res.get('data'): print('bundleIds lookup failed:',st,json.dumps(res)[:400]); raise SystemExit(1)
+          bid=res['data'][0]['id']
           st,_=api('POST',BASE+'/bundleIdCapabilities',{'data':{'type':'bundleIdCapabilities','attributes':{'capabilityType':'PUSH_NOTIFICATIONS'},'relationships':{'bundleId':{'data':{'type':'bundleIds','id':bid}}}}})
           print('push capability:', 'enabled' if st<400 else f'already/err {st}')
           st,res=api('GET',BASE+'/profiles?filter%5Bname%5D=Wromble%20CI%20AppStore')
           for p in res.get('data',[]): api('DELETE',BASE+f"/profiles/{p['id']}")
-          st,res=api('POST',BASE+'/profiles',{'data':{'type':'profiles','attributes':{'name':'Wromble CI AppStore','profileType':'IOS_APP_STORE'},'relationships':{'bundleId':{'data':{'type':'bundleIds','id':bid}},'certificates':{'data':[{'type':'certificates','id':cid}]}}}})
-          if st>=400: print(json.dumps(res)[:800]); raise SystemExit(1)
+          st,res=api_retry('POST',BASE+'/profiles',{'data':{'type':'profiles','attributes':{'name':'Wromble CI AppStore','profileType':'IOS_APP_STORE'},'relationships':{'bundleId':{'data':{'type':'bundleIds','id':bid}},'certificates':{'data':[{'type':'certificates','id':cid}]}}}})
+          if st>=400 or not (res.get('data') or {}).get('attributes',{}).get('profileContent'):
+              print(json.dumps(res)[:800]); raise SystemExit(1)
           open('/tmp/profile.b64','w').write(res['data']['attributes']['profileContent'])
           print('profile ready for cert', cid)
           PY
