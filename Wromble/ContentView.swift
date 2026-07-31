@@ -857,6 +857,17 @@ func wrombleClearStaffSession() {
     wrClearAuthToken()
 }
 
+// Praesentations-anker til ASWebAuthenticationSession (Facebook web-login).
+// Returnerer app'ens key-window, saa Facebook-login-arket kan vises.
+final class WrombleWebAuthContext: NSObject, ASWebAuthenticationPresentationContextProviding {
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        return UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+            .first(where: { $0.isKeyWindow }) ?? ASPresentationAnchor()
+    }
+}
+
 struct LoginView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.horizontalSizeClass) var sizeClass
@@ -869,6 +880,9 @@ struct LoginView: View {
     @State private var phone = ""
     @State private var errorMessage = ""
     @State private var isLoading = false
+    // Facebook web-login (ASWebAuthenticationSession skal holdes i live mens den koerer)
+    @State private var fbAuthSession: ASWebAuthenticationSession?
+    @State private var fbAuthContext = WrombleWebAuthContext()
     var onLogin: (UserProfile) -> Void
 
     var body: some View {
@@ -954,6 +968,18 @@ struct LoginView: View {
                 .signInWithAppleButtonStyle(.black)
                 .frame(maxWidth: sizeClass == .regular ? 400 : .infinity, minHeight: 50)
                 .cornerRadius(14)
+
+                Button(action: { startFacebookLogin() }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "f.circle.fill")
+                        Text("Log ind med Facebook").fontWeight(.semibold)
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: sizeClass == .regular ? 400 : .infinity, minHeight: 50)
+                    .background(Color(red: 24/255, green: 119/255, blue: 242/255))
+                    .cornerRadius(14)
+                }
+                .disabled(isLoading)
 
                 Button(action: {
                     onLogin(UserProfile(id: 0, name: "Gaest", email: "", phone: nil, type: "guest"))
@@ -1121,6 +1147,54 @@ struct LoginView: View {
         case .failure(let error):
             errorMessage = "Apple-login mislykkedes: \(error.localizedDescription)"
         }
+    }
+
+    // "Log ind med Facebook" via web-flow. Genbruger hjemmesidens Facebook-opsaetning,
+    // saa der ikke skal en native Facebook-SDK eller nye noegler til. Custom Tab-agtigt
+    // ark (ASWebAuthenticationSession) aabner app-facebook-start.php; naar Facebook er
+    // faerdig, sendes brugeren tilbage via wromble://fb-login?code=... som vi fanger her.
+    func startFacebookLogin() {
+        errorMessage = ""
+        guard let url = URL(string: "\(baseURL)/app-facebook-start.php") else { return }
+        let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "wromble") { callbackURL, _ in
+            guard let callbackURL = callbackURL,
+                  let code = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?
+                      .queryItems?.first(where: { $0.name == "code" })?.value,
+                  !code.isEmpty else { return }
+            exchangeFacebookCode(code)
+        }
+        session.presentationContextProvider = fbAuthContext
+        session.prefersEphemeralWebBrowserSession = false
+        fbAuthSession = session
+        session.start()
+    }
+
+    // Bytter engangs-koden fra Facebook web-flowet til en bruger (samme som Apple).
+    func exchangeFacebookCode(_ code: String) {
+        isLoading = true
+        errorMessage = ""
+        guard let url = URL(string: "\(baseURL)/api/app-facebook-exchange.php") else { isLoading = false; return }
+        var request = wrRequest(url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["code": code])
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            DispatchQueue.main.async {
+                isLoading = false
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    errorMessage = "Netvaerksfejl. Proev igen."; return
+                }
+                if let error = json["error"] as? String { errorMessage = error; return }
+                wrSaveAuthToken(json)
+                if let u = json["user"] as? [String: Any] {
+                    onLogin(UserProfile(
+                        id: u["id"] as? Int ?? 0, name: u["name"] as? String ?? "",
+                        email: u["email"] as? String ?? "", phone: u["phone"] as? String,
+                        type: u["type"] as? String ?? "customer"))
+                }
+            }
+        }.resume()
     }
 
     func inputField(_ placeholder: String, text: Binding<String>, icon: String, keyboard: UIKeyboardType = .default, autocap: Bool = true) -> some View {
