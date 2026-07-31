@@ -14,6 +14,41 @@ import AudioToolbox
 let wrombleRed = Color(red: 226/255, green: 15/255, blue: 30/255)
 let baseURL = "https://wromble.dk"
 
+// --- Login-token (sikkerhed) -------------------------------------------------
+// Serveren udsteder en token ved login. Den gemmes og sendes med hver
+// forespoergsel til wromble.dk (Authorization: Bearer), saa serveren selv kan
+// afgoere hvem kalderen er - i stedet for at stole paa et id fra app'en.
+func wrAuthToken() -> String? {
+    let t = UserDefaults.standard.string(forKey: "wr_auth_token")
+    return (t?.isEmpty == false) ? t : nil
+}
+func wrSaveAuthToken(_ json: [String: Any]) {
+    if let t = json["token"] as? String, !t.isEmpty {
+        UserDefaults.standard.set(t, forKey: "wr_auth_token")
+    }
+}
+func wrClearAuthToken() {
+    UserDefaults.standard.removeObject(forKey: "wr_auth_token")
+}
+// Bygger en URLRequest der baerer login-token'en - MEN kun til wromble.dk, saa
+// token'en aldrig laekker til fx dataforsyningen eller kort-tjenester.
+func wrRequest(_ url: URL) -> URLRequest {
+    var req = URLRequest(url: url)
+    if (url.host?.contains("wromble.dk") ?? false), let t = wrAuthToken() {
+        req.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
+    }
+    return req
+}
+extension URLSession {
+    func wrData(from url: URL) async throws -> (Data, URLResponse) {
+        return try await data(for: wrRequest(url))
+    }
+    func wrDataTask(with url: URL, completionHandler: @escaping (Data?, URLResponse?, Error?) -> Void) -> URLSessionDataTask {
+        return dataTask(with: wrRequest(url), completionHandler: completionHandler)
+    }
+}
+// -----------------------------------------------------------------------------
+
 // API'et returnerer nogle billeder som fulde URL'er (https://...) og andre som filnavne.
 // Denne helper undgaar dobbelt-URL som https://wromble.dk/uploads/https://...
 func wrombleImageURL(_ path: String?) -> URL? {
@@ -81,7 +116,7 @@ final class WrombleImageLoader: ObservableObject {
     }
 
     private func fetch(_ url: URL) async {
-        let req = URLRequest(url: url)
+        let req = wrRequest(url)
         // 1) serve from cache instantly if we have it
         if let cached = wrombleImageCache.cachedResponse(for: req),
            let ui = UIImage(data: cached.data) {
@@ -819,6 +854,7 @@ func wrombleLoadStaffSession() -> StaffSession? {
 
 func wrombleClearStaffSession() {
     UserDefaults.standard.removeObject(forKey: wrombleStaffSessionKey)
+    wrClearAuthToken()
 }
 
 struct LoginView: View {
@@ -990,7 +1026,7 @@ struct LoginView: View {
     func doStaffLogin() {
         isLoading = true; errorMessage = ""
         guard let url = URL(string: "\(baseURL)/api/login.php") else { isLoading = false; return }
-        var request = URLRequest(url: url)
+        var request = wrRequest(url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["email": email, "password": password, "mode": role.apiMode])
@@ -1003,6 +1039,7 @@ struct LoginView: View {
                     errorMessage = "Netvaerksfejl. Proev igen."; return
                 }
                 if let error = json["error"] as? String { errorMessage = error; return }
+                wrSaveAuthToken(json)
                 if let u = json["user"] as? [String: Any] {
                     let session = StaffSession(
                         id: u["id"] as? Int ?? 0,
@@ -1058,7 +1095,7 @@ struct LoginView: View {
             isLoading = true
             errorMessage = ""
             guard let url = URL(string: "\(baseURL)/api/apple-login.php") else { return }
-            var request = URLRequest(url: url)
+            var request = wrRequest(url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try? JSONSerialization.data(withJSONObject: [
@@ -1072,6 +1109,7 @@ struct LoginView: View {
                         errorMessage = "Netvaerksfejl. Proev igen."; return
                     }
                     if let error = json["error"] as? String { errorMessage = error; return }
+                wrSaveAuthToken(json)
                     if let u = json["user"] as? [String: Any] {
                         onLogin(UserProfile(
                             id: u["id"] as? Int ?? 0, name: u["name"] as? String ?? "",
@@ -1101,7 +1139,7 @@ struct LoginView: View {
     func doLogin() {
         isLoading = true; errorMessage = ""
         guard let url = URL(string: "\(baseURL)/api/login.php") else { return }
-        var request = URLRequest(url: url)
+        var request = wrRequest(url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["email": email, "password": password, "mode": "customer"])
@@ -1114,6 +1152,7 @@ struct LoginView: View {
                     errorMessage = "Netvaerksfejl. Proev igen."; return
                 }
                 if let error = json["error"] as? String { errorMessage = error; return }
+                wrSaveAuthToken(json)
                 if let u = json["user"] as? [String: Any] {
                     onLogin(UserProfile(
                         id: u["id"] as? Int ?? 0, name: u["name"] as? String ?? "",
@@ -1128,7 +1167,7 @@ struct LoginView: View {
         isLoading = true; errorMessage = ""
         guard !firstname.isEmpty else { errorMessage = "Fornavn er paakraevet"; isLoading = false; return }
         guard let url = URL(string: "\(baseURL)/api/register.php") else { return }
-        var request = URLRequest(url: url)
+        var request = wrRequest(url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: [
@@ -1142,6 +1181,7 @@ struct LoginView: View {
                     errorMessage = "Netvaerksfejl. Proev igen."; return
                 }
                 if let error = json["error"] as? String { errorMessage = error; return }
+                wrSaveAuthToken(json)
                 if let u = json["user"] as? [String: Any] {
                     onLogin(UserProfile(
                         id: u["id"] as? Int ?? 0, name: u["name"] as? String ?? "",
@@ -1556,7 +1596,7 @@ struct AlarmSettingsSheet: View {
 
     private func loadPhone() {
         guard riderId > 0, let url = URL(string: "\(baseURL)/api/app-driver-phone.php?rider_id=\(riderId)") else { return }
-        URLSession.shared.dataTask(with: url) { data, _, _ in
+        URLSession.shared.wrDataTask(with: url) { data, _, _ in
             if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let p = j["phone"] as? String {
                 DispatchQueue.main.async { phone = p }
@@ -1566,7 +1606,7 @@ struct AlarmSettingsSheet: View {
 
     private func savePhone() {
         guard riderId > 0, let url = URL(string: "\(baseURL)/api/app-driver-phone.php") else { return }
-        var req = URLRequest(url: url); req.httpMethod = "POST"
+        var req = wrRequest(url); req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["rider_id": riderId, "phone": phone])
         URLSession.shared.dataTask(with: req) { _, _, _ in
@@ -1671,7 +1711,7 @@ struct DriverDashboardView: View {
     func postLocation() {
         guard !orders.isEmpty, let l = loc.location else { return }
         guard let url = URL(string: "\(baseURL)/api/driver-location.php") else { return }
-        var req = URLRequest(url: url); req.httpMethod = "POST"
+        var req = wrRequest(url); req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: [
             "rider_id": session.id,
@@ -1685,7 +1725,7 @@ struct DriverDashboardView: View {
     func take(_ order: DriverOrder) {
         actionId = order.id
         guard let url = URL(string: "\(baseURL)/api/app-driver-take.php") else { actionId = nil; return }
-        var req = URLRequest(url: url); req.httpMethod = "POST"
+        var req = wrRequest(url); req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: [
             "rider_id": session.id, "company_id": session.companyId, "order_id": order.id
@@ -1865,7 +1905,7 @@ struct DriverDashboardView: View {
     func load(showSpinner: Bool = true) async {
         guard let url = URL(string: "\(baseURL)/api/app-driver-orders.php?rider_id=\(session.id)&company_id=\(session.companyId)") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Resp: Codable { let orders: [DriverOrder] }
             let r = try JSONDecoder().decode(Resp.self, from: data)
             await MainActor.run {
@@ -1889,7 +1929,7 @@ struct DriverDashboardView: View {
             await MainActor.run { historyLoading = false }; return
         }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Resp: Codable { let orders: [DriverOrder] }
             let r = try JSONDecoder().decode(Resp.self, from: data)
             await MainActor.run { history = r.orders; historyLoading = false }
@@ -1950,7 +1990,7 @@ struct DriverDashboardView: View {
             body["latitude"] = l.coordinate.latitude
             body["longitude"] = l.coordinate.longitude
         }
-        var req = URLRequest(url: url); req.httpMethod = "POST"
+        var req = wrRequest(url); req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         URLSession.shared.dataTask(with: req) { data, _, _ in
@@ -2086,7 +2126,7 @@ struct CompanyOrdersView: View {
     // Henter firmaets valgte alarm-varighed (0/5/10/15 sek).
     func loadAlarmSeconds() {
         guard let url = URL(string: "\(baseURL)/api/app-company-alarm.php?company_id=\(session.companyId)") else { return }
-        URLSession.shared.dataTask(with: url) { data, _, _ in
+        URLSession.shared.wrDataTask(with: url) { data, _, _ in
             if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let s = j["alarm_seconds"] as? Int {
                 DispatchQueue.main.async { alarmSeconds = s }
@@ -2292,7 +2332,7 @@ struct CompanyOrdersView: View {
         let scope = tab == 1 ? "history" : "active"
         guard let url = URL(string: "\(baseURL)/api/app-company-orders.php?company_id=\(session.companyId)&scope=\(scope)&include_failed=1") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Resp: Codable { let orders: [CompanyOrder] }
             let r = try JSONDecoder().decode(Resp.self, from: data)
             await MainActor.run {
@@ -2326,7 +2366,7 @@ struct CompanyOrdersView: View {
         WrombleAlarm.shared.stop()
         actionId = order.id
         guard let url = URL(string: "\(baseURL)/api/app-company-order-action.php") else { actionId = nil; return }
-        var req = URLRequest(url: url); req.httpMethod = "POST"
+        var req = wrRequest(url); req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["company_id": session.companyId, "order_id": order.id, "action": action])
         URLSession.shared.dataTask(with: req) { data, _, _ in
@@ -2459,7 +2499,7 @@ struct CompanyDashboardView: View {
 
     func loadAlarm() {
         guard let url = URL(string: "\(baseURL)/api/app-company-alarm.php?company_id=\(session.companyId)") else { return }
-        URLSession.shared.dataTask(with: url) { data, _, _ in
+        URLSession.shared.wrDataTask(with: url) { data, _, _ in
             var s = 5
             if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 s = j["alarm_seconds"] as? Int ?? 5
@@ -2474,7 +2514,7 @@ struct CompanyDashboardView: View {
         // Kort forhaandsvisning saa man hoerer valget (undtagen Fra).
         if value > 0 { WrombleAlarm.shared.start(seconds: min(Double(value), 2.0)) } else { WrombleAlarm.shared.stop() }
         guard let url = URL(string: "\(baseURL)/api/app-company-alarm.php") else { return }
-        var req = URLRequest(url: url)
+        var req = wrRequest(url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["company_id": session.companyId, "alarm_seconds": value])
@@ -2483,7 +2523,7 @@ struct CompanyDashboardView: View {
 
     func loadAutoAccept() {
         guard let url = URL(string: "\(baseURL)/api/app-company-autoaccept.php?company_id=\(session.companyId)") else { return }
-        URLSession.shared.dataTask(with: url) { data, _, _ in
+        URLSession.shared.wrDataTask(with: url) { data, _, _ in
             var a = true
             if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 a = (j["auto_accept"] as? Int ?? 1) == 1
@@ -2496,7 +2536,7 @@ struct CompanyDashboardView: View {
         guard !autoLoading else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         guard let url = URL(string: "\(baseURL)/api/app-company-autoaccept.php") else { return }
-        var req = URLRequest(url: url)
+        var req = wrRequest(url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["company_id": session.companyId, "auto_accept": value ? 1 : 0])
@@ -2505,7 +2545,7 @@ struct CompanyDashboardView: View {
 
     func loadBusy() {
         guard let url = URL(string: "\(baseURL)/api/app-company-busy.php?company_id=\(session.companyId)") else { return }
-        URLSession.shared.dataTask(with: url) { data, _, _ in
+        URLSession.shared.wrDataTask(with: url) { data, _, _ in
             var b = false
             if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 b = (j["busy"] as? Int ?? 0) == 1
@@ -2518,7 +2558,7 @@ struct CompanyDashboardView: View {
         guard !busyLoading else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         guard let url = URL(string: "\(baseURL)/api/app-company-busy.php") else { return }
-        var req = URLRequest(url: url)
+        var req = wrRequest(url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["company_id": session.companyId, "busy": value ? 1 : 0])
@@ -2645,7 +2685,7 @@ struct StripeEarningsView: View {
 
             // Saldo
             if let url = URL(string: "\(baseURL)/api/app-tips-balance.php?type=\(recipientType)&id=\(recipientId)") {
-                URLSession.shared.dataTask(with: url) { data, _, _ in
+                URLSession.shared.wrDataTask(with: url) { data, _, _ in
                     if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                         DispatchQueue.main.async {
                             balance = j["balance"] as? Double ?? (j["balance"] as? NSNumber)?.doubleValue ?? 0
@@ -2661,7 +2701,7 @@ struct StripeEarningsView: View {
 
             // Stripe-status
             if let url = URL(string: "\(baseURL)/api/app-stripe-connect.php?type=\(recipientType)&id=\(recipientId)") {
-                URLSession.shared.dataTask(with: url) { data, _, _ in
+                URLSession.shared.wrDataTask(with: url) { data, _, _ in
                     if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                         DispatchQueue.main.async {
                             payoutsEnabled = j["payouts_enabled"] as? Bool ?? false
@@ -2677,7 +2717,7 @@ struct StripeEarningsView: View {
     func connect() {
         working = true; message = nil
         guard let url = URL(string: "\(baseURL)/api/app-stripe-connect.php") else { working = false; return }
-        var req = URLRequest(url: url); req.httpMethod = "POST"
+        var req = wrRequest(url); req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["type": recipientType, "id": recipientId])
         URLSession.shared.dataTask(with: req) { data, _, _ in
@@ -2700,7 +2740,7 @@ struct StripeEarningsView: View {
     func payout() {
         working = true; message = nil
         guard let url = URL(string: "\(baseURL)/api/app-tips-payout.php") else { working = false; return }
-        var req = URLRequest(url: url); req.httpMethod = "POST"
+        var req = wrRequest(url); req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["type": recipientType, "id": recipientId])
         URLSession.shared.dataTask(with: req) { data, _, _ in
@@ -2843,7 +2883,7 @@ struct CompanyMenuView: View {
         await MainActor.run { isLoading = true }
         guard let url = URL(string: "\(baseURL)/api/menu.php?company_id=\(session.companyId)") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Resp: Codable { let categories: [MenuCategory] }
             let r = try JSONDecoder().decode(Resp.self, from: data)
             await MainActor.run { categories = r.categories; isLoading = false }
@@ -3008,7 +3048,7 @@ struct CompanyHoursView: View {
     func load() async {
         guard let url = URL(string: "\(baseURL)/api/app-company-hours.php?company_id=\(session.companyId)") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Resp: Codable { let days: [CompanyHourDay] }
             let r = try JSONDecoder().decode(Resp.self, from: data)
             await MainActor.run { days = r.days; isLoading = false }
@@ -3107,7 +3147,7 @@ struct CompanyProfileView: View {
     func load() async {
         guard let url = URL(string: "\(baseURL)/api/app-company-profile.php?company_id=\(session.companyId)") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Resp: Codable { let profile: CompanyProfile }
             let r = try JSONDecoder().decode(Resp.self, from: data)
             await MainActor.run {
@@ -3186,7 +3226,7 @@ struct FormSuccessView: View {
 
 func postJSON(_ path: String, _ payload: [String: Any], completion: @escaping (Bool, String?) -> Void) {
     guard let url = URL(string: "\(baseURL)/api/\(path)") else { completion(false, "Ugyldig adresse"); return }
-    var req = URLRequest(url: url); req.httpMethod = "POST"
+    var req = wrRequest(url); req.httpMethod = "POST"
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
     URLSession.shared.dataTask(with: req) { data, _, _ in
@@ -3392,7 +3432,7 @@ struct JobsView: View {
     func load() async {
         guard let url = URL(string: "\(baseURL)/api/app-jobs.php") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Resp: Codable { let jobs: [JobPost] }
             let r = try JSONDecoder().decode(Resp.self, from: data)
             await MainActor.run { jobs = r.jobs; isLoading = false }
@@ -3500,7 +3540,7 @@ enum DawaService {
         ]
         guard let url = comps.url else { return [] }
         do {
-            let (data, resp) = try await URLSession.shared.data(from: url)
+            let (data, resp) = try await URLSession.shared.wrData(from: url)
             guard (resp as? HTTPURLResponse)?.statusCode == 200,
                   let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
             else { return [] }
@@ -3526,7 +3566,7 @@ enum DawaService {
               let url = URL(string: "https://api.dataforsyningen.dk/postnumre/\(nr)")
         else { return nil }
         do {
-            let (data, resp) = try await URLSession.shared.data(from: url)
+            let (data, resp) = try await URLSession.shared.wrData(from: url)
             guard (resp as? HTTPURLResponse)?.statusCode == 200,
                   let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return nil }
@@ -3700,7 +3740,7 @@ struct CustomerProfileView: View {
     func load() async {
         guard let url = URL(string: "\(baseURL)/api/app-user-profile.php?user_id=\(userId)") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Resp: Codable { let profile: CustomerProfileData }
             let r = try JSONDecoder().decode(Resp.self, from: data)
             await MainActor.run {
@@ -4173,7 +4213,7 @@ struct HomeView: View {
     func loadRestaurants() async {
         guard let url = URL(string: "\(baseURL)/api/restaurants.php") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Response: Codable { let restaurants: [Restaurant] }
             let response = try JSONDecoder().decode(Response.self, from: data)
             await MainActor.run { restaurants = response.restaurants; isLoading = false }
@@ -4185,7 +4225,7 @@ struct HomeView: View {
     func loadCategories() async {
         guard let url = URL(string: "\(baseURL)/api/home-categories.php") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Response: Codable { let categories: [ProductCat] }
             let response = try JSONDecoder().decode(Response.self, from: data)
             await MainActor.run { productCats = response.categories }
@@ -4995,7 +5035,7 @@ struct MapTabView: View {
     func loadRestaurants() async {
         guard let url = URL(string: "\(baseURL)/api/restaurants.php") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Response: Codable { let restaurants: [Restaurant] }
             let response = try JSONDecoder().decode(Response.self, from: data)
             await MainActor.run {
@@ -5278,7 +5318,7 @@ struct RestaurantDetailView: View {
     func loadMenu() async {
         guard let url = URL(string: "\(baseURL)/api/menu.php?company_id=\(restaurant.id)") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct CompanyInfo: Codable { let id: Int; let name: String }
             struct Response: Codable { let company: CompanyInfo?; let categories: [MenuCategory] }
             let response = try JSONDecoder().decode(Response.self, from: data)
@@ -5291,7 +5331,7 @@ struct RestaurantDetailView: View {
     func loadHours() async {
         guard let url = URL(string: "\(baseURL)/api/app-company-hours.php?company_id=\(restaurant.id)") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Resp: Codable { let days: [CompanyHourDay]; let shop_status: String? }
             let r = try JSONDecoder().decode(Resp.self, from: data)
             await MainActor.run { hoursDays = r.days; shopStatus = r.shop_status ?? "" }
@@ -5757,7 +5797,7 @@ struct CartView: View {
     // Overskriver ALDRIG noget kunden selv har tastet.
     func prefillDeliveryAddress(userId: Int) {
         guard let url = URL(string: "\(baseURL)/api/app-user-profile.php?user_id=\(userId)") else { return }
-        URLSession.shared.dataTask(with: url) { data, _, _ in
+        URLSession.shared.wrDataTask(with: url) { data, _, _ in
             guard let data = data else { return }
             struct Resp: Codable { let profile: CustomerProfileData }
             guard let r = try? JSONDecoder().decode(Resp.self, from: data) else { return }
@@ -5796,7 +5836,7 @@ struct CartView: View {
         guard cart.restaurantId > 0,
               let url = URL(string: "\(baseURL)/api/app-company-hours.php?company_id=\(cart.restaurantId)") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Resp: Codable { let days: [CompanyHourDay]; let shop_status: String? }
             let r = try JSONDecoder().decode(Resp.self, from: data)
             await MainActor.run { hoursDays = r.days; shopStatus = r.shop_status ?? "" }
@@ -5823,7 +5863,7 @@ struct CartView: View {
         isOrdering = true
         errorMessage = ""
         guard let url = URL(string: "\(baseURL)/api/place-order.php") else { return }
-        var request = URLRequest(url: url)
+        var request = wrRequest(url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
@@ -5866,7 +5906,7 @@ struct CartView: View {
     // Aabner Stripe Checkout i Safari, saa kunden kan betale drikkepenge til chaufføeren.
     func startTipCheckout(orderId: Int) {
         guard tipAmount >= 1, let url = URL(string: "\(baseURL)/api/app-tip-checkout.php") else { return }
-        var req = URLRequest(url: url); req.httpMethod = "POST"
+        var req = wrRequest(url); req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: [
             "amount": tipAmount,
@@ -6024,7 +6064,7 @@ struct OrdersView: View {
         UserDefaults.standard.set(userId, forKey: "loggedInUserId")
         guard let url = URL(string: "\(baseURL)/api/orders.php?user_id=\(userId)") else { return }
 
-        URLSession.shared.dataTask(with: url) { data, _, _ in
+        URLSession.shared.wrDataTask(with: url) { data, _, _ in
             DispatchQueue.main.async {
                 isLoading = false
                 guard let data = data,
@@ -6398,7 +6438,7 @@ struct OrderTrackingView: View {
     func fetchStatus() async {
         guard let url = URL(string: "\(baseURL)/api/order-status.php?order_id=\(orderId)") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.wrData(from: url)
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 await MainActor.run { isLoading = false }; return
             }
@@ -6457,7 +6497,7 @@ class ChatViewModel: ObservableObject {
     func startConversation(name: String, email: String) {
         isLoading = true
         guard let url = URL(string: "\(baseURL)/api/chat-start.php") else { return }
-        var request = URLRequest(url: url)
+        var request = wrRequest(url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["name": name, "email": email])
@@ -6481,7 +6521,7 @@ class ChatViewModel: ObservableObject {
     func sendMessage(_ text: String, senderName: String) {
         guard conversationId > 0, !text.isEmpty else { return }
         guard let url = URL(string: "\(baseURL)/api/chat-send.php") else { return }
-        var request = URLRequest(url: url)
+        var request = wrRequest(url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
@@ -6499,7 +6539,7 @@ class ChatViewModel: ObservableObject {
         guard conversationId > 0 else { return }
         guard let url = URL(string: "\(baseURL)/api/chat-upload.php") else { return }
         let boundary = "Boundary-\(UUID().uuidString)"
-        var request = URLRequest(url: url)
+        var request = wrRequest(url)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
@@ -6551,7 +6591,7 @@ class ChatViewModel: ObservableObject {
         guard conversationId > 0 else { return }
         guard let url = URL(string: "\(baseURL)/api/chat-poll.php?conversation_id=\(conversationId)&after=\(lastMessageId)") else { return }
 
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        URLSession.shared.wrDataTask(with: url) { [weak self] data, _, _ in
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let msgsArray = json["messages"] as? [[String: Any]] else { return }
@@ -6899,7 +6939,7 @@ struct CallWebView: UIViewRepresentable {
         web.scrollView.isScrollEnabled = false
         web.isOpaque = false
         web.backgroundColor = .black
-        web.load(URLRequest(url: url))
+        web.load(wrRequest(url))
         return web
     }
 
@@ -7134,6 +7174,7 @@ struct ProfileView: View {
                     Button(action: {
                         loggedInUser = nil
                         UserDefaults.standard.removeObject(forKey: "loggedInUserId")
+                        wrClearAuthToken()
                         UserDefaults.standard.removeObject(forKey: "loggedInUserName")
                         UserDefaults.standard.removeObject(forKey: "loggedInUserEmail")
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -7195,6 +7236,7 @@ struct ProfileView: View {
                 AccountDeletionView(user: user, onDeleted: {
                     loggedInUser = nil
                     UserDefaults.standard.removeObject(forKey: "loggedInUserId")
+                        wrClearAuthToken()
                     UserDefaults.standard.removeObject(forKey: "loggedInUserName")
                     UserDefaults.standard.removeObject(forKey: "loggedInUserEmail")
                     FavoritesManager.shared.favoriteIds.removeAll()
@@ -7333,7 +7375,7 @@ struct AccountDeletionView: View {
         isDeleting = true
         errorMessage = ""
         guard let url = URL(string: "\(baseURL)/api/delete-account.php") else { return }
-        var request = URLRequest(url: url)
+        var request = wrRequest(url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = ["user_id": user.id, "email": user.email, "password": password]
@@ -7348,6 +7390,7 @@ struct AccountDeletionView: View {
                     return
                 }
                 if let error = json["error"] as? String { errorMessage = error; return }
+                wrSaveAuthToken(json)
                 if json["success"] as? Bool == true {
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     onDeleted()
