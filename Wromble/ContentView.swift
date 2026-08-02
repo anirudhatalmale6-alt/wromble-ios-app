@@ -3791,6 +3791,14 @@ struct CustomerProfileView: View {
                             HStack { Text("Email").foregroundColor(.secondary); Spacer(); Text(email).foregroundColor(.secondary) }
                         }
                     }
+                    Section(header: Text("Sikkerhed")) {
+                        NavigationLink { ChangeEmailView(currentEmail: email, onChanged: { email = $0 }) } label: {
+                            HStack { Image(systemName: "envelope.fill").foregroundColor(wrombleRed).frame(width: 24); Text("Skift email") }
+                        }
+                        NavigationLink { ChangePasswordView() } label: {
+                            HStack { Image(systemName: "lock.fill").foregroundColor(wrombleRed).frame(width: 24); Text("Skift adgangskode") }
+                        }
+                    }
                     if let t = toast {
                         Section { Text(t).foregroundColor(.green).font(.subheadline) }
                     }
@@ -3838,6 +3846,108 @@ struct CustomerProfileView: View {
             isSaving = false
             withAnimation { toast = ok ? "Gemt" : (err ?? "Fejl") }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { withAnimation { toast = nil } }
+        }
+    }
+}
+
+// Skift email-adresse. Kraever bekraeftelse med nuvaerende adgangskode. POSTer til
+// change-email.php (Bearer-token -> serveren ved selv HVEM der aendrer).
+struct ChangeEmailView: View {
+    @Environment(\.dismiss) var dismiss
+    var currentEmail: String
+    var onChanged: (String) -> Void
+    @State private var newEmail = ""
+    @State private var currentPassword = ""
+    @State private var isSaving = false
+    @State private var errorMsg: String?
+
+    private var canSubmit: Bool { !newEmail.isEmpty && !currentPassword.isEmpty }
+
+    var body: some View {
+        Form {
+            Section(header: Text("Nuvaerende email")) {
+                Text(currentEmail.isEmpty ? "—" : currentEmail).foregroundColor(.secondary)
+            }
+            Section(header: Text("Ny email")) {
+                TextField("Ny email", text: $newEmail)
+                    .keyboardType(.emailAddress).autocapitalization(.none)
+                    .textContentType(.emailAddress).disableAutocorrection(true)
+            }
+            Section(header: Text("Bekraeft"), footer: Text("Indtast din nuvaerende adgangskode for at bekraefte aendringen.")) {
+                SecureField("Nuvaerende adgangskode", text: $currentPassword)
+            }
+            if let e = errorMsg {
+                Section { Text(e).foregroundColor(.red).font(.subheadline) }
+            }
+            Section {
+                Button(action: submit) {
+                    HStack { Spacer(); if isSaving { ProgressView() } else { Text("Gem ny email").font(.headline) }; Spacer() }
+                }
+                .disabled(isSaving || !canSubmit)
+                .listRowBackground(canSubmit ? wrombleRed : Color.gray)
+                .foregroundColor(.white)
+            }
+        }
+        .navigationTitle("Skift email")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func submit() {
+        isSaving = true; errorMsg = nil
+        postJSON("change-email.php", ["current_password": currentPassword, "new_email": newEmail.trimmingCharacters(in: .whitespaces)]) { ok, err in
+            isSaving = false
+            if ok { onChanged(newEmail.trimmingCharacters(in: .whitespaces)); dismiss() }
+            else { errorMsg = err ?? "Kunne ikke aendre email" }
+        }
+    }
+}
+
+// Skift adgangskode. Bekraeft med nuvaerende kode; ny kode mindst 6 tegn og skal
+// indtastes to gange. POSTer til change-password.php (Bearer-token).
+struct ChangePasswordView: View {
+    @Environment(\.dismiss) var dismiss
+    @State private var currentPassword = ""
+    @State private var newPassword = ""
+    @State private var confirmPassword = ""
+    @State private var isSaving = false
+    @State private var errorMsg: String?
+
+    private var canSubmit: Bool {
+        !currentPassword.isEmpty && newPassword.count >= 6 && newPassword == confirmPassword
+    }
+
+    var body: some View {
+        Form {
+            Section(header: Text("Nuvaerende adgangskode")) {
+                SecureField("Nuvaerende adgangskode", text: $currentPassword)
+            }
+            Section(header: Text("Ny adgangskode"), footer: Text("Mindst 6 tegn.")) {
+                SecureField("Ny adgangskode", text: $newPassword)
+                SecureField("Gentag ny adgangskode", text: $confirmPassword)
+            }
+            if let e = errorMsg {
+                Section { Text(e).foregroundColor(.red).font(.subheadline) }
+            }
+            Section {
+                Button(action: submit) {
+                    HStack { Spacer(); if isSaving { ProgressView() } else { Text("Skift adgangskode").font(.headline) }; Spacer() }
+                }
+                .disabled(isSaving || !canSubmit)
+                .listRowBackground(canSubmit ? wrombleRed : Color.gray)
+                .foregroundColor(.white)
+            }
+        }
+        .navigationTitle("Skift adgangskode")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func submit() {
+        if newPassword != confirmPassword { errorMsg = "De to nye adgangskoder er ikke ens"; return }
+        isSaving = true; errorMsg = nil
+        postJSON("change-password.php", ["current_password": currentPassword, "new_password": newPassword]) { ok, err in
+            isSaving = false
+            if ok { dismiss() }
+            else { errorMsg = err ?? "Kunne ikke skifte adgangskode" }
         }
     }
 }
