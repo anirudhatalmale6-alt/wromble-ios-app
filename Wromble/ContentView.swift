@@ -5646,6 +5646,9 @@ struct CartView: View {
     @State private var tipAmount: Double = 0
     @State private var customTip = ""
     @State private var tipCheckoutOpened = false
+    // Online betaling for selve ordren (Stripe Checkout - kort/Apple Pay/MobilePay)
+    @State private var orderCheckoutOpened = false
+    @State private var paymentInfo = ""
     // Oensket tidspunkt for afhentning/levering (valgfrit - standard hurtigst muligt)
     // Hurtigst mulige tid er altid mindst 1 time frem, saa chaufføeren/køekkenet har tid.
     @State private var scheduleLater = false
@@ -5917,6 +5920,31 @@ struct CartView: View {
                 .font(.body).foregroundColor(.secondary)
                 .multilineTextAlignment(.center).padding(.horizontal, 40)
 
+            // Online betaling for selve ordren (kort / Apple Pay / MobilePay via Stripe)
+            if paymentMethod == 1 {
+                VStack(spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "creditcard.fill").foregroundColor(wrombleRed)
+                        Text(String(format: "Beloeb: %.2f kr", cart.total)).font(.subheadline.weight(.semibold))
+                    }
+                    Button(action: { startOrderCheckout(orderId: orderId) }) {
+                        HStack {
+                            Image(systemName: orderCheckoutOpened ? "arrow.up.right.square" : "creditcard.fill")
+                            Text(orderCheckoutOpened ? "Betaling aabnet i Safari" : "Betal nu").font(.headline)
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: sizeClass == .regular ? 300 : .infinity)
+                        .padding(.vertical, 14).background(wrombleRed).cornerRadius(14)
+                    }
+                    if !paymentInfo.isEmpty {
+                        Text(paymentInfo).font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
+                    }
+                }
+                .padding(16)
+                .background(Color(.secondarySystemBackground)).cornerRadius(16)
+                .padding(.horizontal, 30)
+            }
+
             // Drikkepenge til chaufføeren - betales separat med kort
             if tipAmount >= 1 {
                 VStack(spacing: 10) {
@@ -6082,6 +6110,38 @@ struct CartView: View {
                     showOrderConfirmation = true
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     scheduleOrderNotification(orderId: oid)
+                    // Ved online betaling: aabn Stripe Checkout med det samme, saa kunden betaler.
+                    if paymentMethod == 1 { startOrderCheckout(orderId: oid) }
+                }
+            }
+        }.resume()
+    }
+
+    // Aabner Stripe Checkout i Safari for selve ordren. Kunden betaler hele beloebet til
+    // Wromble; varebeloebet oeremaerkes forretningens konto og Wrombles provision beholdes
+    // (haandteres server-side i order-checkout.php via Stripe Connect).
+    func startOrderCheckout(orderId: Int) {
+        guard orderId > 0, let url = URL(string: "\(baseURL)/api/order-checkout.php") else { return }
+        paymentInfo = ""
+        var req = wrRequest(url); req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["order_id": orderId])
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            DispatchQueue.main.async {
+                guard let data = data,
+                      let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    paymentInfo = "Kunne ikke aabne betaling. Proev igen."
+                    return
+                }
+                if let s = j["checkout_url"] as? String, let u = URL(string: s) {
+                    orderCheckoutOpened = true
+                    UIApplication.shared.open(u)
+                } else if (j["needs_onboarding"] as? Bool) == true {
+                    paymentInfo = "Online betaling er ikke klar hos denne forretning endnu. Du kan betale kontant ved afhentning/levering."
+                } else if let e = j["error"] as? String {
+                    paymentInfo = e
+                } else {
+                    paymentInfo = "Kunne ikke aabne betaling. Proev igen."
                 }
             }
         }.resume()
