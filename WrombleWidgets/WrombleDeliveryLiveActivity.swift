@@ -104,6 +104,14 @@ struct WrombleLiveActivityLockScreen: View {
 
     private var statusLine: String {
         let s = context.state
+        // Chauffør-kort: tekst set fra chaufføerens side.
+        if context.attributes.role == "driver" {
+            if s.stage >= 3 { return "Leveret ✓ – godt arbejde!" }
+            if s.stage == 2 {
+                return s.etaText.isEmpty ? "Du er på vej ud til kunden." : "På vej – \(s.etaText)"
+            }
+            return "Klar til at køre ud til kunden."
+        }
         if s.stage >= 3 { return "Din ordre er leveret. Velbekomme!" }
         if s.stage == 2 {
             return s.etaText.isEmpty ? "Din ordre er paa vej til dig." : "Paa vej – \(s.etaText)"

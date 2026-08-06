@@ -13,4 +13,6 @@ struct WrombleDeliveryAttributes: ActivityAttributes {
     }
     var orderId: Int
     var companyName: String
+    // "customer" = kundens spor-kort; "driver" = chaufføerens leverings-kort (lokalt styret).
+    var role: String = "customer"
 }

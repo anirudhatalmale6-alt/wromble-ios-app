@@ -58,6 +58,33 @@ enum WrombleLiveActivityManager {
         URLSession.shared.dataTask(with: req).resume()
     }
 
+    // --- CHAUFFØR-kort (Type 3) --------------------------------------------
+    // Chaufføerens eget leverings-kort. Styres LOKALT af appen (ingen server-push /
+    // ingen aktivitets-token), fordi chaufføren selv udloeser trinene (paa vej -> leveret).
+    // Vi bruger derfor IKKE pushType: .token her - saa vi heller ikke overskriver
+    // kundens aktivitets-token for samme ordre paa serveren.
+    static func startDriver(orderId: Int, title: String, stage: Int, statusLabel: String, etaText: String) {
+        guard orderId > 0, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        let state = WrombleDeliveryAttributes.ContentState(stage: stage, statusLabel: statusLabel, etaText: etaText)
+        if let act = Activity<WrombleDeliveryAttributes>.activities.first(where: { $0.attributes.orderId == orderId }) {
+            Task { await act.update(using: state) }
+        } else {
+            let attrs = WrombleDeliveryAttributes(orderId: orderId, companyName: title, role: "driver")
+            _ = try? Activity.request(attributes: attrs, contentState: state)   // lokal (ingen pushType)
+        }
+    }
+
+    static func updateDriver(orderId: Int, stage: Int, statusLabel: String, etaText: String, end: Bool = false) {
+        guard orderId > 0 else { return }
+        let state = WrombleDeliveryAttributes.ContentState(stage: stage, statusLabel: statusLabel, etaText: etaText)
+        Task {
+            for act in Activity<WrombleDeliveryAttributes>.activities where act.attributes.orderId == orderId {
+                if end { await act.end(using: state, dismissalPolicy: .after(Date().addingTimeInterval(30))) }
+                else { await act.update(using: state) }
+            }
+        }
+    }
+
     // Afslut alle leverings-aktiviteter med det samme (fx ved log ud).
     static func endAll() {
         for act in Activity<WrombleDeliveryAttributes>.activities {
