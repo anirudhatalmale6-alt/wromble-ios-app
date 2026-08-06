@@ -67,18 +67,39 @@ struct WrombleLiveActivityLockScreen: View {
     let context: ActivityViewContext<WrombleDeliveryAttributes>
 
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                WrombleBadge()
-                Text(context.attributes.companyName.isEmpty ? "Din ordre" : context.attributes.companyName)
-                    .font(.system(size: 17, weight: .bold)).foregroundColor(.white).lineLimit(1)
-                Text(statusLine)
-                    .font(.system(size: 14)).foregroundColor(.white.opacity(0.85)).lineLimit(2)
+        // "Type 3" - stort kort med trin-tidslinje (Modtaget -> Tilberedes -> Paa vej
+        // -> Leveret) + minut-badge. Størst mulige lock screen Live Activity paa iOS.
+        VStack(alignment: .leading, spacing: 15) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 6) {
+                    WrombleBadge()
+                    Text(context.attributes.companyName.isEmpty ? "Din ordre" : context.attributes.companyName)
+                        .font(.system(size: 21, weight: .bold)).foregroundColor(.white).lineLimit(1)
+                    Text(statusLine)
+                        .font(.system(size: 14)).foregroundColor(.white.opacity(0.85)).lineLimit(2)
+                }
+                Spacer(minLength: 8)
+                if !context.state.etaText.isEmpty {
+                    VStack(spacing: 0) {
+                        Text(etaNumber).font(.system(size: 20, weight: .heavy)).foregroundColor(.white)
+                        Text("min.").font(.system(size: 11, weight: .semibold)).foregroundColor(.white.opacity(0.9))
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14)
+                            .fill(context.state.stage >= 3 ? wrombleGreen : wrombleRed)
+                    )
+                }
             }
-            Spacer(minLength: 8)
-            WrombleProgressRing(stage: context.state.stage, size: 62, lineWidth: 7)
+            WrombleStepTimeline(stage: context.state.stage)
         }
         .padding(16)
+    }
+
+    // Traekker minut-tallet ud af etaText ("ca. 8 min." -> "8", "8-12 min." -> "8-12").
+    private var etaNumber: String {
+        let filtered = context.state.etaText.filter { $0.isNumber || $0 == "-" }
+        return filtered.isEmpty ? context.state.etaText : filtered
     }
 
     private var statusLine: String {
@@ -89,6 +110,53 @@ struct WrombleLiveActivityLockScreen: View {
         }
         if s.stage == 1 { return "Restauranten er gaaet i gang med din ordre." }
         return "Din ordre er modtaget."
+    }
+}
+
+// Vandret 4-trins tidslinje med forbindelses-streger + ikoner. Fyldes roedt op til
+// og med det aktuelle trin; det aktive trin faar en bloed "glow"-ring.
+@available(iOS 16.1, *)
+struct WrombleStepTimeline: View {
+    let stage: Int
+    private let steps: [(icon: String, cap: String)] = [
+        ("checkmark", "Modtaget"),
+        ("fork.knife", "Tilberedes"),
+        ("bicycle", "På vej"),
+        ("house.fill", "Leveret")
+    ]
+    private let track = Color.white.opacity(0.16)
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { idx, step in
+                VStack(spacing: 7) {
+                    ZStack {
+                        // Forbindelses-streg (venstre + hoejre halvdel af cellen).
+                        HStack(spacing: 0) {
+                            Rectangle()
+                                .fill(idx == 0 ? Color.clear : (stage >= idx ? wrombleRed : track))
+                                .frame(height: 3)
+                            Rectangle()
+                                .fill(idx == steps.count - 1 ? Color.clear : (stage >= idx + 1 ? wrombleRed : track))
+                                .frame(height: 3)
+                        }
+                        if stage == idx {
+                            Circle().fill(wrombleRed.opacity(0.28)).frame(width: 40, height: 40)
+                        }
+                        Circle()
+                            .fill(stage >= idx ? wrombleRed : Color.white.opacity(0.14))
+                            .frame(width: 32, height: 32)
+                        Image(systemName: step.icon)
+                            .font(.system(size: 13, weight: .bold)).foregroundColor(.white)
+                    }
+                    Text(step.cap)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(stage >= idx ? .white : .white.opacity(0.7))
+                        .lineLimit(1).minimumScaleFactor(0.8)
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
     }
 }
 
