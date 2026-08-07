@@ -1811,13 +1811,7 @@ struct DriverDashboardView: View {
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     loc.startTracking(); postLocation()
                     showToast("Du er paa vej med ordre #\(order.id)")
-                    // Start chaufføerens store Type 3-leverings-kort (laaseskaerm).
-                    if #available(iOS 16.1, *) {
-                        WrombleLiveActivityManager.startDriver(
-                            orderId: order.id,
-                            title: order.customer.isEmpty ? "Ordre #\(order.id)" : order.customer,
-                            stage: 2, statusLabel: "På vej", etaText: "")
-                    }
+                    // (Type 3-kortet er KUN til kunden - chaufføren har ikke sit eget kort.)
                     Task { await load() }
                 } else {
                     showToast("Kunne ikke starte leveringen")
@@ -2082,11 +2076,6 @@ struct DriverDashboardView: View {
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     orders.removeAll { $0.id == order.id }
                     showToast("Ordre #\(order.id) leveret")
-                    // Afslut chaufføerens leverings-kort (viser "Leveret" kort og lukker).
-                    if #available(iOS 16.1, *) {
-                        WrombleLiveActivityManager.updateDriver(
-                            orderId: order.id, stage: 3, statusLabel: "Leveret", etaText: "", end: true)
-                    }
                     Task { await loadHistory() }   // opdater historik med det samme
                 } else if j?["too_far"] as? Bool == true {
                     // Uden for 3 km: vis en tydelig dialog, saa chaufføeren ikke tror ordren blev leveret.
