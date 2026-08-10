@@ -342,6 +342,10 @@ class CartManager: ObservableObject {
     @Published var items: [CartItem] = []
     @Published var restaurantId: Int = 0
     @Published var restaurantName: String = ""
+    // Bordbestilling: reservationens id foelger med paa ordren (table_res_id),
+    // saa forretningen ser hvilket bord maden skal ud til.
+    @Published var tableReservationId: Int = 0
+    @Published var tableReservationLabel: String = ""
 
     var total: Double { items.reduce(0) { $0 + $1.price * Double($1.quantity) } }
     var itemCount: Int { items.reduce(0) { $0 + $1.quantity } }
@@ -349,6 +353,7 @@ class CartManager: ObservableObject {
     func addItem(_ item: MenuItem, forRestaurant rid: Int, name rname: String) {
         if restaurantId != rid && restaurantId != 0 {
             items.removeAll()
+            clearTableReservation()   // reservationen gaelder kun den restaurant den blev lavet til
         }
         restaurantId = rid
         restaurantName = rname
@@ -370,8 +375,11 @@ class CartManager: ObservableObject {
         }
     }
 
+    func clearTableReservation() { tableReservationId = 0; tableReservationLabel = "" }
+
     func clear() {
         items.removeAll()
+        clearTableReservation()
         restaurantId = 0
         restaurantName = ""
     }
@@ -3151,6 +3159,187 @@ struct CompanyHoursView: View {
     }
 }
 
+// MARK: - Bordbestilling (kunde)
+// Samme reservationer som paa wromble.dk: api/app-table-booking.php gemmer i
+// users_company_tables_time i hjemmesidens eget format, saa en booking lavet i
+// app'en er identisk med en lavet paa nettet.
+struct WrombleBookableTable: Codable, Identifiable {
+    let id: Int
+    let table_number: Int
+    let persons: Int
+    let free_slots: [String]
+}
+
+// Serveren bruger hjemmesidens format ("18:00 PM-19:00 PM"). AM/PM er overfloedigt
+// paa dansk (klokkeslettet er 24-timers i forvejen), saa det skjules i visningen.
+func wrPrettySlot(_ s: String) -> String {
+    s.replacingOccurrences(of: " AM", with: "")
+     .replacingOccurrences(of: " PM", with: "")
+     .replacingOccurrences(of: "-", with: " - ")
+}
+
+struct TableBookingView: View {
+    let companyId: Int
+    let companyName: String
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var dayOffset = 0
+    @State private var tables: [WrombleBookableTable] = []
+    @State private var selectedTableId: Int?
+    @State private var isLoading = true
+    @State private var isBooking = false
+    @State private var toast: String?
+    @State private var confirmSlot: String?
+
+    var days: [(key: String, label: String)] {
+        let keyFmt = DateFormatter(); keyFmt.dateFormat = "yyyy-MM-dd"
+        let lblFmt = DateFormatter()
+        lblFmt.locale = Locale(identifier: "da_DK"); lblFmt.dateFormat = "EEE d/M"
+        return (0..<14).map { off in
+            let d = Calendar.current.date(byAdding: .day, value: off, to: Date()) ?? Date()
+            let label = off == 0 ? "I dag" : (off == 1 ? "I morgen" : lblFmt.string(from: d).capitalized)
+            return (keyFmt.string(from: d), label)
+        }
+    }
+
+    var selectedTable: WrombleBookableTable? {
+        tables.first { $0.id == selectedTableId }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Dagsvaelger
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(days.enumerated()), id: \.offset) { i, d in
+                        Text(d.label)
+                            .font(.subheadline.weight(i == dayOffset ? .bold : .regular))
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                            .background(i == dayOffset ? wrombleRed : Color(.systemGray6))
+                            .foregroundColor(i == dayOffset ? .white : .primary)
+                            .clipShape(Capsule())
+                            .onTapGesture { dayOffset = i; Task { await load() } }
+                    }
+                }.padding(.horizontal, 16).padding(.vertical, 12)
+            }
+
+            if isLoading {
+                HStack { Spacer(); ProgressView().padding(40); Spacer() }
+            } else if tables.isEmpty {
+                Text("Restauranten har ikke oprettet nogen borde endnu.")
+                    .font(.subheadline).foregroundColor(.secondary)
+                    .padding(.horizontal, 20).padding(.top, 30)
+            } else {
+                Text("Vaelg bord").font(.headline).padding(.horizontal, 20).padding(.bottom, 6)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(tables) { t in
+                            VStack(spacing: 2) {
+                                Text("Bord \(t.table_number)").font(.subheadline.weight(.bold))
+                                Text("\(t.persons) pers.").font(.caption).foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .background(selectedTableId == t.id ? wrombleRed.opacity(0.12) : Color(.systemGray6))
+                            .foregroundColor(selectedTableId == t.id ? wrombleRed : .primary)
+                            .cornerRadius(14)
+                            .onTapGesture { selectedTableId = t.id }
+                        }
+                    }.padding(.horizontal, 16)
+                }
+
+                Text("Vaelg tid").font(.headline).padding(.horizontal, 20).padding(.top, 14)
+
+                if let t = selectedTable {
+                    if t.free_slots.isEmpty {
+                        Text("Ingen ledige tider paa bord \(t.table_number) denne dag. Proev en anden dag eller et andet bord.")
+                            .font(.subheadline).foregroundColor(.secondary).padding(.horizontal, 20).padding(.top, 6)
+                    } else {
+                        List(t.free_slots, id: \.self) { slot in
+                            HStack {
+                                Text(wrPrettySlot(slot))
+                                Spacer()
+                                Text("Ledig").font(.caption.weight(.bold)).foregroundColor(.green)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture { if !isBooking { confirmSlot = slot } }
+                        }
+                        .listStyle(.plain)
+                    }
+                } else {
+                    Text("Vaelg et bord foerst").font(.subheadline).foregroundColor(.secondary)
+                        .padding(.horizontal, 20).padding(.top, 6)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .navigationTitle("Book bord")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+        .alert("Reservér bord \(selectedTable?.table_number ?? 0)?",
+               isPresented: Binding(get: { confirmSlot != nil },
+                                    set: { if !$0 { confirmSlot = nil } })) {
+            Button("Annuller", role: .cancel) { confirmSlot = nil }
+            Button("Reservér") { if let s = confirmSlot { reserve(s) }; confirmSlot = nil }
+        } message: {
+            Text("\(days[dayOffset].label) kl. \(wrPrettySlot(confirmSlot ?? ""))\n\nBestiller du mad bagefter, sendes ordren til dette bord.")
+        }
+        .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
+    }
+
+    func load() async {
+        await MainActor.run { isLoading = true }
+        guard let url = URL(string: "\(baseURL)/api/app-table-booking.php?company_id=\(companyId)&date=\(days[dayOffset].key)") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.wrData(from: url)
+            struct Resp: Codable { let tables: [WrombleBookableTable] }
+            let r = try JSONDecoder().decode(Resp.self, from: data)
+            await MainActor.run {
+                tables = r.tables
+                // Vaelg foerste bord med ledige tider, saa der altid vises noget
+                if selectedTableId == nil || !r.tables.contains(where: { $0.id == selectedTableId }) {
+                    selectedTableId = (r.tables.first { !$0.free_slots.isEmpty } ?? r.tables.first)?.id
+                }
+                isLoading = false
+            }
+        } catch {
+            await MainActor.run { isLoading = false; showToast("Kunne ikke hente ledige tider") }
+        }
+    }
+
+    func reserve(_ slot: String) {
+        guard let t = selectedTable else { return }
+        isBooking = true
+        postJSONRaw("app-table-booking.php", [
+            "action": "reserve",
+            "company_id": companyId,
+            "table_id": t.id,
+            "date": days[dayOffset].key,
+            "time_slot": slot
+        ]) { ok, err, json in
+            if ok, let rid = json?["reservation_id"] as? Int {
+                CartManager.shared.tableReservationId = rid
+            }
+            isBooking = false
+            if ok {
+                // Husk reservationen saa den foelger med paa ordren (table_res_id)
+                CartManager.shared.tableReservationLabel =
+                    "Bord \(t.table_number) · \(days[dayOffset].label) \(wrPrettySlot(slot))"
+                showToast("Bordet er reserveret")
+                Task { await load() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { dismiss() }
+            } else {
+                showToast(err ?? "Tiden kunne ikke reserveres")
+                Task { await load() }
+            }
+        }
+    }
+
+    func showToast(_ msg: String) {
+        withAnimation { toast = msg }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { if toast == msg { withAnimation { toast = nil } } }
+    }
+}
+
 // MARK: - Borde (forretningens indstillinger)
 // Samme borde som paa hjemmesiden (users_company_tables). Forretningen kan oprette,
 // rette og slette borde. Har et bord reservationer, advares der foer sletning.
@@ -3464,6 +3653,26 @@ struct FormSuccessView: View {
             .padding(.horizontal, 24).padding(.bottom, 20)
         }
     }
+}
+
+// Som postJSON, men giver ogsaa hele svaret med tilbage - bruges naar vi skal
+// bruge en vaerdi fra svaret (fx reservation_id ved bordbestilling).
+func postJSONRaw(_ path: String, _ payload: [String: Any],
+                 completion: @escaping (Bool, String?, [String: Any]?) -> Void) {
+    guard let url = URL(string: "\(baseURL)/api/\(path)") else { completion(false, "Ugyldig adresse", nil); return }
+    var req = wrRequest(url); req.httpMethod = "POST"
+    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+    URLSession.shared.dataTask(with: req) { data, _, _ in
+        DispatchQueue.main.async {
+            guard let data = data,
+                  let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                completion(false, "Netvaerksfejl. Proev igen.", nil); return
+            }
+            if let err = j["error"] as? String { completion(false, err, j); return }
+            completion(j["success"] as? Bool == true, nil, j)
+        }
+    }.resume()
 }
 
 func postJSON(_ path: String, _ payload: [String: Any], completion: @escaping (Bool, String?) -> Void) {
@@ -5590,6 +5799,30 @@ struct RestaurantDetailView: View {
                         }
                     }
 
+                    // Book bord (bordbestilling) - samme reservationer som paa wromble.dk.
+                    // Vises kun naar kunden ikke allerede sidder ved et scannet bord.
+                    if scannedTable == nil {
+                        NavigationLink {
+                            TableBookingView(companyId: restaurant.id, companyName: restaurant.name)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "calendar.badge.plus")
+                                    .font(.title3).foregroundColor(wrombleRed)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Book bord").font(.subheadline.weight(.bold)).foregroundColor(.primary)
+                                    Text("Reservér et bord og bestil til bordet")
+                                        .font(.caption).foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.caption).foregroundColor(.secondary)
+                            }
+                            .padding(12)
+                            .background(Color(.systemGray6))
+                            .cornerRadius(12)
+                            .padding(.top, 6)
+                        }
+                    }
+
                     if let table = scannedTable {
                         HStack(spacing: 10) {
                             Image(systemName: "qrcode")
@@ -5859,6 +6092,23 @@ struct CartView: View {
 
     var cartContent: some View {
         List {
+            // Bordbestilling: vis det reserverede bord, saa kunden kan se at ordren
+            // sendes til bordet (og kan fjerne reservationen igen).
+            if cart.tableReservationId > 0 {
+                Section {
+                    HStack(spacing: 10) {
+                        Text("🍽️").font(.title3)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Bordbestilling").font(.subheadline.weight(.bold)).foregroundColor(wrombleRed)
+                            Text(cart.tableReservationLabel).font(.caption).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Button("Fjern") { cart.clearTableReservation() }
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
+
             Section(header: Text(cart.restaurantName)) {
                 ForEach(cart.items) { item in
                     HStack {
@@ -6257,6 +6507,8 @@ struct CartView: View {
             "wanted_time": wantedTimeLabel,
             // Oensket tid som unix-tid (0 = hurtigst muligt). Serveren haandhaever mindst 1 time frem.
             "wanted_ts": scheduleLater ? Int(wantedTime.timeIntervalSince1970) : 0,
+            // Bordbestilling: serveren tjekker at reservationen er kundens egen
+            "table_res_id": cart.tableReservationId,
             "items": cart.items.map { ["id": $0.id, "quantity": $0.quantity] as [String: Any] }
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
