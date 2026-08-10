@@ -2559,6 +2559,9 @@ struct CompanyDashboardView: View {
                 NavigationLink { CompanyHoursView(session: session) } label: {
                     Label("Aabningstider", systemImage: "clock.fill").foregroundColor(.primary)
                 }
+                NavigationLink { CompanyTablesView(session: session) } label: {
+                    Label("Borde", systemImage: "table.furniture").foregroundColor(.primary)
+                }
                 NavigationLink { StripeEarningsView(recipientType: "company", recipientId: session.companyId, heading: "Drikkepenge") } label: {
                     Label("Drikkepenge", systemImage: "banknote.fill").foregroundColor(.primary)
                 }
@@ -3145,6 +3148,170 @@ struct CompanyHoursView: View {
     func showToast(_ msg: String) {
         withAnimation { toast = msg }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { if toast == msg { withAnimation { toast = nil } } }
+    }
+}
+
+// MARK: - Borde (forretningens indstillinger)
+// Samme borde som paa hjemmesiden (users_company_tables). Forretningen kan oprette,
+// rette og slette borde. Har et bord reservationer, advares der foer sletning.
+struct WrombleCompanyTable: Codable, Identifiable {
+    let id: Int
+    let table_number: Int
+    let persons: Int
+    let bookings: Int
+}
+
+struct CompanyTablesView: View {
+    let session: StaffSession
+    @State private var tables: [WrombleCompanyTable] = []
+    @State private var isLoading = true
+    @State private var toast: String?
+    @State private var showEditor = false
+    @State private var editing: WrombleCompanyTable?      // nil = nyt bord
+    @State private var deleteTarget: WrombleCompanyTable?
+
+    var body: some View {
+        List {
+            if isLoading {
+                HStack { Spacer(); ProgressView(); Spacer() }
+            } else if tables.isEmpty {
+                VStack(spacing: 8) {
+                    Text("Ingen borde endnu").font(.headline)
+                    Text("Opret dine borde her, saa gaesterne kan reservere dem.")
+                        .font(.caption).foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 20)
+            } else {
+                ForEach(tables) { t in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Bord \(t.table_number)").font(.headline)
+                            Text(t.bookings > 0
+                                 ? "\(t.persons) personer  ·  \(t.bookings) reservationer"
+                                 : "\(t.persons) personer")
+                                .font(.caption).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Button { editing = t; showEditor = true } label: {
+                            Image(systemName: "pencil").foregroundColor(wrombleRed)
+                        }.buttonStyle(.borderless)
+                        Button { deleteTarget = t } label: {
+                            Image(systemName: "trash").foregroundColor(.secondary)
+                        }.buttonStyle(.borderless)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Borde")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { editing = nil; showEditor = true } label: { Image(systemName: "plus") }
+            }
+        }
+        .task { await load() }
+        .sheet(isPresented: $showEditor) {
+            CompanyTableEditor(table: editing) { saved in
+                showEditor = false
+                if saved { Task { await load() } }
+            }
+        }
+        .alert("Slet bord \(deleteTarget?.table_number ?? 0)?",
+               isPresented: Binding(get: { deleteTarget != nil },
+                                    set: { if !$0 { deleteTarget = nil } })) {
+            Button("Annuller", role: .cancel) { deleteTarget = nil }
+            Button("Slet", role: .destructive) {
+                if let t = deleteTarget { delete(t) }
+                deleteTarget = nil
+            }
+        } message: {
+            Text((deleteTarget?.bookings ?? 0) > 0
+                 ? "Bordet har \(deleteTarget?.bookings ?? 0) reservationer. De slettes ogsaa. Handlingen kan ikke fortrydes."
+                 : "Handlingen kan ikke fortrydes.")
+        }
+        .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
+    }
+
+    func load() async {
+        guard let url = URL(string: "\(baseURL)/api/app-company-tables.php") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.wrData(from: url)
+            struct Resp: Codable { let tables: [WrombleCompanyTable] }
+            let r = try JSONDecoder().decode(Resp.self, from: data)
+            await MainActor.run { tables = r.tables; isLoading = false }
+        } catch {
+            await MainActor.run { isLoading = false; showToast("Kunne ikke hente borde") }
+        }
+    }
+
+    func delete(_ t: WrombleCompanyTable) {
+        postJSON("app-company-tables.php", ["action": "delete", "id": t.id]) { ok, err in
+            showToast(ok ? "Bordet er slettet" : (err ?? "Fejl"))
+            if ok { Task { await load() } }
+        }
+    }
+
+    func showToast(_ msg: String) {
+        withAnimation { toast = msg }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { if toast == msg { withAnimation { toast = nil } } }
+    }
+}
+
+// Opret/rediger et bord
+struct CompanyTableEditor: View {
+    let table: WrombleCompanyTable?
+    let onDone: (Bool) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var number = ""
+    @State private var persons = ""
+    @State private var isSaving = false
+    @State private var error: String?
+
+    var isNew: Bool { table == nil }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    TextField("Bordnummer", text: $number).keyboardType(.numberPad)
+                    TextField("Antal personer", text: $persons).keyboardType(.numberPad)
+                }
+                if let e = error {
+                    Section { Text(e).foregroundColor(wrombleRed).font(.caption) }
+                }
+            }
+            .navigationTitle(isNew ? "Nyt bord" : "Rediger bord")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuller") { onDone(false); dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: save) { if isSaving { ProgressView() } else { Text("Gem") } }
+                        .disabled(isSaving || Int(number) == nil || Int(persons) == nil)
+                }
+            }
+            .onAppear {
+                if let t = table { number = String(t.table_number); persons = String(t.persons) }
+            }
+        }
+    }
+
+    func save() {
+        isSaving = true
+        error = nil
+        var payload: [String: Any] = [
+            "action": isNew ? "add" : "update",
+            "number": Int(number) ?? 0,
+            "persons": Int(persons) ?? 0
+        ]
+        if let t = table { payload["id"] = t.id }
+        postJSON("app-company-tables.php", payload) { ok, err in
+            isSaving = false
+            if ok { onDone(true); dismiss() } else { error = err ?? "Kunne ikke gemme bordet" }
+        }
     }
 }
 
