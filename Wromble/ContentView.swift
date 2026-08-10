@@ -6294,6 +6294,8 @@ struct OrdersView: View {
             switch status.lowercased() {
             case "completed", "delivered": return ("Leveret", .green)
             case "processing", "preparing": return ("Tilberedes", .orange)
+            // Chauffoeren har trykket "Start levering" og er paa vej med ordren
+            case "on_the_way", "delivering": return ("Under levering", .blue)
             case "cancelled": return ("Annulleret", .red)
             default: return ("Afventer", .blue)
             }
