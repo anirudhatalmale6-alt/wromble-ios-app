@@ -178,6 +178,8 @@ struct Restaurant: Identifiable, Codable, Hashable {
     let logo: String?
     let categories: Int
     let items: Int
+    // Antal borde forretningen har oprettet. nil/0 = bordbestilling tilbydes ikke.
+    let tables: Int?
 
     static func == (lhs: Restaurant, rhs: Restaurant) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -346,6 +348,9 @@ class CartManager: ObservableObject {
     // saa forretningen ser hvilket bord maden skal ud til.
     @Published var tableReservationId: Int = 0
     @Published var tableReservationLabel: String = ""
+    // Hvordan kunden vil bestille - vaelges naar den foerste vare laegges i kurven:
+    // "" = ikke valgt, "table" = bordbestilling, "delivery" = levering, "pickup" = afhentning
+    @Published var orderMode: String = ""
 
     var total: Double { items.reduce(0) { $0 + $1.price * Double($1.quantity) } }
     var itemCount: Int { items.reduce(0) { $0 + $1.quantity } }
@@ -353,6 +358,7 @@ class CartManager: ObservableObject {
     func addItem(_ item: MenuItem, forRestaurant rid: Int, name rname: String) {
         if restaurantId != rid && restaurantId != 0 {
             items.removeAll()
+            orderMode = ""            // bestillingsmaaden vaelges forfra i den nye butik
             clearTableReservation()   // reservationen gaelder kun den restaurant den blev lavet til
         }
         restaurantId = rid
@@ -382,6 +388,7 @@ class CartManager: ObservableObject {
         clearTableReservation()
         restaurantId = 0
         restaurantName = ""
+        orderMode = ""
     }
 }
 
@@ -3337,6 +3344,7 @@ struct TableBookingView: View {
                 // Husk reservationen saa den foelger med paa ordren (table_res_id)
                 CartManager.shared.tableReservationLabel =
                     "Bord \(t.table_number) · \(days[dayOffset].label) \(wrPrettySlot(slot))"
+                CartManager.shared.orderMode = "table"
                 showToast("Bordet er reserveret")
                 Task { await load() }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { dismiss() }
@@ -5919,7 +5927,14 @@ struct RestaurantDetailView: View {
     @State private var hoursDays: [CompanyHourDay] = []
     @State private var shopStatus: String = ""
     @State private var showClosedAlert = false
+    // Valg af bestillingsmaade naar den foerste vare laegges i kurven
+    @State private var modeItem: MenuItem?
+    @State private var showModeSheet = false
+    @State private var goToBooking = false
     var visibleCategories: [MenuCategory] { categories.filter { !$0.products.isEmpty } }
+
+    // Bordbestilling tilbydes kun naar forretningen faktisk har oprettet borde
+    var tableCount: Int { restaurant.tables ?? 0 }
 
     // Dagens aabningstid (butik) + aaben/lukket-status, synkroniseret med wromble.dk
     var todayHours: CompanyHourDay? {
@@ -5994,6 +6009,14 @@ struct RestaurantDetailView: View {
         } message: {
             Text("Du har varer fra \(cart.restaurantName) i kurven. Vil du rydde den og tilfoeje fra \(restaurant.name)?")
         }
+        .confirmationDialog("Hvordan vil du bestille?", isPresented: $showModeSheet, titleVisibility: .visible) {
+            if tableCount > 0 {
+                Button("Bordbestilling – reservér et bord") { chooseMode("table") }
+            }
+            Button("Levering – vi kører varerne ud") { chooseMode("delivery") }
+            Button("Afhentning – du henter selv") { chooseMode("pickup") }
+            Button("Fortryd", role: .cancel) { modeItem = nil }
+        }
         .alert("Butikken er lukket", isPresented: $showClosedAlert) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -6050,8 +6073,15 @@ struct RestaurantDetailView: View {
                     }
 
                     // Book bord (bordbestilling) - samme reservationer som paa wromble.dk.
-                    // Vises kun naar kunden ikke allerede sidder ved et scannet bord.
-                    if scannedTable == nil {
+                    // Vises kun naar forretningen HAR borde, og kunden ikke allerede
+                    // sidder ved et scannet bord.
+                    if scannedTable == nil && tableCount > 0 {
+                        // Skjult link, saa "Bordbestilling" i valg-arket kan sende videre hertil
+                        NavigationLink(isActive: $goToBooking) {
+                            TableBookingView(companyId: restaurant.id, companyName: restaurant.name)
+                        } label: { EmptyView() }
+                        .hidden()
+
                         NavigationLink {
                             TableBookingView(companyId: restaurant.id, companyName: restaurant.name)
                         } label: {
@@ -6136,10 +6166,29 @@ struct RestaurantDetailView: View {
         if cart.restaurantId != 0 && cart.restaurantId != restaurant.id && !cart.items.isEmpty {
             pendingItem = item
             showClearCartAlert = true
-        } else {
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            cart.addItem(item, forRestaurant: restaurant.id, name: restaurant.name)
+            return
         }
+        // Foerste vare: spoerg hvordan kunden vil bestille - bordbestilling,
+        // levering eller afhentning. Sidder kunden allerede ved et scannet bord
+        // (eller har reserveret et), er valget givet.
+        let alreadyStarted = cart.restaurantId == restaurant.id && !cart.items.isEmpty && !cart.orderMode.isEmpty
+        if scannedTable == nil && cart.tableReservationId == 0 && !alreadyStarted {
+            modeItem = item
+            showModeSheet = true
+            return
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        cart.addItem(item, forRestaurant: restaurant.id, name: restaurant.name)
+    }
+
+    // Laegger varen i kurven og husker den valgte bestillingsmaade
+    func chooseMode(_ mode: String) {
+        guard let item = modeItem else { return }
+        modeItem = nil
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        cart.addItem(item, forRestaurant: restaurant.id, name: restaurant.name)
+        cart.orderMode = mode
+        if mode == "table" { goToBooking = true }
     }
 
     func openInMaps() {
@@ -6291,6 +6340,8 @@ struct CartView: View {
     @State private var errorMessage = ""
     // Levering/afhentning + betaling (samme flow som wromble.dk)
     @State private var isDelivery = false            // false = Afhentning, true = Levering
+    // Bordbestilling: maden serveres ved bordet - hverken levering eller afhentning
+    var isTableOrder: Bool { cart.orderMode == "table" || cart.tableReservationId > 0 }
     @State private var deliveryAddress = ""
     @State private var paymentMethod = 2             // 1 = Online betaling, 2 = Kontanter
     // Drikkepenge til chaufføeren (kun ved levering). Betales separat med kort.
@@ -6353,7 +6404,8 @@ struct CartView: View {
                             Text(cart.tableReservationLabel).font(.caption).foregroundColor(.secondary)
                         }
                         Spacer()
-                        Button("Fjern") { cart.clearTableReservation() }
+                        // Fjernes bordet, falder ordren tilbage til afhentning
+                        Button("Fjern") { cart.clearTableReservation(); cart.orderMode = "pickup"; isDelivery = false }
                             .font(.caption).foregroundColor(.secondary)
                     }
                 }
@@ -6392,7 +6444,9 @@ struct CartView: View {
                 }
             }
 
-            // Levering eller afhentning (som paa wromble.dk)
+            // Levering eller afhentning (som paa wromble.dk).
+            // Ved bordbestilling er der intet at vaelge - maden kommer ud til bordet.
+            if !isTableOrder {
             Section(header: Text("Levering eller afhentning")) {
                 Picker("", selection: $isDelivery) {
                     Text("Afhentning").tag(false)
@@ -6400,6 +6454,7 @@ struct CartView: View {
                 }
                 .pickerStyle(.segmented)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                .onChange(of: isDelivery) { v in cart.orderMode = v ? "delivery" : "pickup" }
 
                 if isDelivery {
                     DanishAddressField(text: $deliveryAddress)
@@ -6409,6 +6464,7 @@ struct CartView: View {
                         Text("Du henter selv hos restauranten").font(.subheadline).foregroundColor(.secondary)
                     }
                 }
+            }
             }
 
             // Hvornaar oensker kunden ordren? Standard = hurtigst muligt.
@@ -6572,7 +6628,12 @@ struct CartView: View {
                 }
             }
         }
-        .onAppear { loadUser() }
+        .onAppear {
+            loadUser()
+            // Kunden valgte allerede levering/afhentning da varen kom i kurven
+            if cart.orderMode == "delivery" { isDelivery = true }
+            else if cart.orderMode == "pickup" || isTableOrder { isDelivery = false }
+        }
         .task { await loadCartHours() }
     }
 
