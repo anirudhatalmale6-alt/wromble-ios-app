@@ -1326,8 +1326,14 @@ struct CompanyOrder: Codable, Identifiable {
     let etaText: String?        // live-ETA fra chaufføeren, fx "ca. 8 min." (tom hvis ukendt)
     let riderName: String?      // navn paa chaufføeren der er paa vej
     let riderPhone: String?     // chaufføerens mobilnummer (vises til forretningen)
+    let tableNumber: Int?       // bordnummer paa en bordordre
+    let tablePersons: Int?      // hvor mange bordet er sat til
+    let tableTime: String?      // fx "13/08 18:00-19:00"
     enum CodingKeys: String, CodingKey {
         case id, customer, phone, address, amount, delivery, payment, table, status, items, delivered, date, overdue
+        case tableNumber = "table_number"
+        case tablePersons = "table_persons"
+        case tableTime = "table_time"
         case isNew = "is_new"
         case wantedTime = "wanted_time"
         case etaText = "eta_text"
@@ -2280,7 +2286,14 @@ struct CompanyOrdersView: View {
             HStack(spacing: 8) {
                 chipTag(order.delivery ? "Levering" : "Afhentning", icon: order.delivery ? "bicycle" : "bag.fill")
                 chipTag(paymentLabel(order.payment), icon: "creditcard.fill")
-                if order.table { chipTag("Bord", icon: "fork.knife") }
+                if order.table {
+                    chipTag((order.tableNumber ?? 0) > 0 ? "Bord \(order.tableNumber ?? 0)" : "Bord", icon: "fork.knife")
+                }
+            }
+
+            if order.table, let tt = order.tableTime, !tt.isEmpty {
+                Label("Bordreservation: \(tt)", systemImage: "calendar")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             // Tidspunkter: hvornaar ordren kom ind + hvornaar den oenskes klar
@@ -3350,16 +3363,102 @@ struct WrombleCompanyTable: Codable, Identifiable {
     let bookings: Int
 }
 
+// En kommende bordreservation set fra forretningen - samme liste som
+// "Kommende reservationer" paa wromble.dk.
+struct WrombleCompanyBooking: Codable, Identifiable {
+    let id: Int
+    let table_id: Int
+    let table_number: Int
+    let persons: Int
+    let date: String            // d/m/Y
+    let time_slot: String
+    let time: String            // 18:00-19:00
+    let customer: String
+    let phone: String
+    let email: String
+    let order_id: Int
+    let order_amount: Double
+    let order_status: String
+}
+
 struct CompanyTablesView: View {
     let session: StaffSession
+    @State private var tab = 0                            // 0 = Borde, 1 = Reservationer
     @State private var tables: [WrombleCompanyTable] = []
+    @State private var bookings: [WrombleCompanyBooking] = []
     @State private var isLoading = true
     @State private var toast: String?
     @State private var showEditor = false
     @State private var editing: WrombleCompanyTable?      // nil = nyt bord
     @State private var deleteTarget: WrombleCompanyTable?
+    @State private var showBookingEditor = false
+    @State private var movingBooking: WrombleCompanyBooking?   // nil = ny reservation
+    @State private var cancelTarget: WrombleCompanyBooking?
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                Text("Borde").tag(0)
+                Text(bookings.isEmpty ? "Reservationer" : "Reservationer (\(bookings.count))").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16).padding(.vertical, 10)
+
+            if tab == 0 { tablesList } else { bookingsList }
+        }
+        .navigationTitle("Borde")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    if tab == 0 { editing = nil; showEditor = true }
+                    else { movingBooking = nil; showBookingEditor = true }
+                } label: { Image(systemName: "plus") }
+            }
+        }
+        .task { await load() }
+        .sheet(isPresented: $showEditor) {
+            CompanyTableEditor(table: editing) { saved in
+                showEditor = false
+                if saved { Task { await load() } }
+            }
+        }
+        .sheet(isPresented: $showBookingEditor) {
+            CompanyBookingEditor(booking: movingBooking, tables: tables) { saved in
+                showBookingEditor = false
+                if saved { Task { await load() } }
+            }
+        }
+        .alert("Slet bord \(deleteTarget?.table_number ?? 0)?",
+               isPresented: Binding(get: { deleteTarget != nil },
+                                    set: { if !$0 { deleteTarget = nil } })) {
+            Button("Annuller", role: .cancel) { deleteTarget = nil }
+            Button("Slet", role: .destructive) {
+                if let t = deleteTarget { delete(t) }
+                deleteTarget = nil
+            }
+        } message: {
+            Text((deleteTarget?.bookings ?? 0) > 0
+                 ? "Bordet har \(deleteTarget?.bookings ?? 0) reservationer. De slettes ogsaa. Handlingen kan ikke fortrydes."
+                 : "Handlingen kan ikke fortrydes.")
+        }
+        .alert("Slet reservation?",
+               isPresented: Binding(get: { cancelTarget != nil },
+                                    set: { if !$0 { cancelTarget = nil } })) {
+            Button("Annuller", role: .cancel) { cancelTarget = nil }
+            Button("Slet", role: .destructive) {
+                if let b = cancelTarget { cancelBooking(b) }
+                cancelTarget = nil
+            }
+        } message: {
+            Text("Bord \(cancelTarget?.table_number ?? 0) · \(cancelTarget?.date ?? "") \(cancelTarget?.time ?? "")\n"
+                 + ((cancelTarget?.order_id ?? 0) > 0 ? "Bestillingen paa bordet fjernes ogsaa. " : "")
+                 + "Handlingen kan ikke fortrydes.")
+        }
+        .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
+    }
+
+    var tablesList: some View {
         List {
             if isLoading {
                 HStack { Spacer(); ProgressView(); Spacer() }
@@ -3392,45 +3491,75 @@ struct CompanyTablesView: View {
                 }
             }
         }
-        .navigationTitle("Borde")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { editing = nil; showEditor = true } label: { Image(systemName: "plus") }
+    }
+
+    var bookingsList: some View {
+        List {
+            if isLoading {
+                HStack { Spacer(); ProgressView(); Spacer() }
+            } else if bookings.isEmpty {
+                VStack(spacing: 8) {
+                    Text("Ingen kommende reservationer").font(.headline)
+                    Text(tables.isEmpty
+                         ? "Opret foerst et bord under fanen Borde."
+                         : "Reservationer fra app'en og wromble.dk vises her. Du kan ogsaa booke et bord selv.")
+                        .font(.caption).foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 20)
+            } else {
+                ForEach(bookings) { b in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Bord \(b.table_number)").font(.headline).foregroundColor(wrombleRed)
+                            Spacer()
+                            Button { movingBooking = b; showBookingEditor = true } label: {
+                                Image(systemName: "pencil").foregroundColor(wrombleRed)
+                            }.buttonStyle(.borderless)
+                            Button { cancelTarget = b } label: {
+                                Image(systemName: "trash").foregroundColor(.secondary)
+                            }.buttonStyle(.borderless)
+                        }
+                        Text("\(b.date)  ·  \(b.time)").font(.subheadline.weight(.bold))
+                        Text(b.persons > 0 ? "\(b.customer)  ·  op til \(b.persons) personer" : b.customer)
+                            .font(.caption).foregroundColor(.secondary)
+                        if !b.phone.isEmpty {
+                            Text(b.phone).font(.caption).foregroundColor(.secondary)
+                        }
+                        Text(b.order_id > 0
+                             ? "Bestilling #\(b.order_id) · \(String(format: "%.2f", b.order_amount)) kr"
+                             : "Ingen mad bestilt endnu")
+                            .font(.caption2)
+                            .foregroundColor(b.order_id > 0 ? .green : .secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
             }
         }
-        .task { await load() }
-        .sheet(isPresented: $showEditor) {
-            CompanyTableEditor(table: editing) { saved in
-                showEditor = false
-                if saved { Task { await load() } }
-            }
-        }
-        .alert("Slet bord \(deleteTarget?.table_number ?? 0)?",
-               isPresented: Binding(get: { deleteTarget != nil },
-                                    set: { if !$0 { deleteTarget = nil } })) {
-            Button("Annuller", role: .cancel) { deleteTarget = nil }
-            Button("Slet", role: .destructive) {
-                if let t = deleteTarget { delete(t) }
-                deleteTarget = nil
-            }
-        } message: {
-            Text((deleteTarget?.bookings ?? 0) > 0
-                 ? "Bordet har \(deleteTarget?.bookings ?? 0) reservationer. De slettes ogsaa. Handlingen kan ikke fortrydes."
-                 : "Handlingen kan ikke fortrydes.")
-        }
-        .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
     }
 
     func load() async {
-        guard let url = URL(string: "\(baseURL)/api/app-company-tables.php") else { return }
+        guard let url = URL(string: "\(baseURL)/api/app-company-tables.php"),
+              let bUrl = URL(string: "\(baseURL)/api/app-company-tables.php?bookings=1") else { return }
         do {
             let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Resp: Codable { let tables: [WrombleCompanyTable] }
             let r = try JSONDecoder().decode(Resp.self, from: data)
-            await MainActor.run { tables = r.tables; isLoading = false }
+            var list: [WrombleCompanyBooking] = []
+            if let (bData, _) = try? await URLSession.shared.wrData(from: bUrl) {
+                struct BResp: Codable { let bookings: [WrombleCompanyBooking] }
+                list = (try? JSONDecoder().decode(BResp.self, from: bData))?.bookings ?? []
+            }
+            await MainActor.run { tables = r.tables; bookings = list; isLoading = false }
         } catch {
             await MainActor.run { isLoading = false; showToast("Kunne ikke hente borde") }
+        }
+    }
+
+    func cancelBooking(_ b: WrombleCompanyBooking) {
+        postJSON("app-company-tables.php", ["action": "cancel", "id": b.id]) { ok, err in
+            showToast(ok ? "Reservationen er slettet" : (err ?? "Fejl"))
+            if ok { Task { await load() } }
         }
     }
 
@@ -3444,6 +3573,127 @@ struct CompanyTablesView: View {
     func showToast(_ msg: String) {
         withAnimation { toast = msg }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { if toast == msg { withAnimation { toast = nil } } }
+    }
+}
+
+// Opret en ny reservation eller flyt en eksisterende. De ledige tider hentes fra
+// serveren, saa app og hjemmeside aldrig kan dobbeltbooke det samme bord.
+struct CompanyBookingEditor: View {
+    let booking: WrombleCompanyBooking?          // nil = ny reservation
+    let tables: [WrombleCompanyTable]
+    let onDone: (Bool) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var tableId = 0
+    @State private var dayOffset = 0
+    @State private var slots: [String] = []
+    @State private var slot = ""
+    @State private var isLoadingSlots = false
+    @State private var isSaving = false
+    @State private var error: String?
+
+    var isNew: Bool { booking == nil }
+
+    var days: [(key: String, label: String)] {
+        let keyFmt = DateFormatter(); keyFmt.dateFormat = "yyyy-MM-dd"
+        let lblFmt = DateFormatter()
+        lblFmt.locale = Locale(identifier: "da_DK"); lblFmt.dateFormat = "EEE d/M"
+        return (0..<14).map { off in
+            let d = Calendar.current.date(byAdding: .day, value: off, to: Date()) ?? Date()
+            let label = off == 0 ? "I dag" : (off == 1 ? "I morgen" : lblFmt.string(from: d).capitalized)
+            return (keyFmt.string(from: d), label)
+        }
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("Bord")) {
+                    Picker("Bord", selection: $tableId) {
+                        ForEach(tables) { t in
+                            Text("Bord \(t.table_number) (\(t.persons) pers.)").tag(t.id)
+                        }
+                    }
+                }
+                Section(header: Text("Dag")) {
+                    Picker("Dag", selection: $dayOffset) {
+                        ForEach(Array(days.enumerated()), id: \.offset) { i, d in
+                            Text(d.label).tag(i)
+                        }
+                    }
+                }
+                Section(header: Text("Ledige tider")) {
+                    if isLoadingSlots {
+                        HStack { Spacer(); ProgressView(); Spacer() }
+                    } else if slots.isEmpty {
+                        Text("Ingen ledige tider paa bordet den dag.")
+                            .font(.caption).foregroundColor(.secondary)
+                    } else {
+                        ForEach(slots, id: \.self) { s in
+                            Button {
+                                slot = s
+                            } label: {
+                                HStack {
+                                    Text(wrPrettySlot(s)).foregroundColor(.primary)
+                                    Spacer()
+                                    if slot == s { Image(systemName: "checkmark").foregroundColor(wrombleRed) }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let e = error {
+                    Section { Text(e).foregroundColor(wrombleRed).font(.caption) }
+                }
+            }
+            .navigationTitle(isNew ? "Ny reservation" : "Flyt reservation")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuller") { onDone(false); dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: save) {
+                        if isSaving { ProgressView() } else { Text(isNew ? "Reservér" : "Flyt") }
+                    }.disabled(isSaving || tableId == 0 || slot.isEmpty)
+                }
+            }
+            .onAppear {
+                tableId = booking?.table_id ?? (tables.first?.id ?? 0)
+                Task { await loadSlots() }
+            }
+            .onChange(of: tableId) { _ in Task { await loadSlots() } }
+            .onChange(of: dayOffset) { _ in Task { await loadSlots() } }
+        }
+    }
+
+    func loadSlots() async {
+        guard tableId > 0 else { return }
+        let date = days[dayOffset].key
+        await MainActor.run { isLoadingSlots = true; slot = "" }
+        guard let url = URL(string: "\(baseURL)/api/app-company-tables.php?slots=1&table_id=\(tableId)&date=\(date)") else { return }
+        struct Resp: Codable { let free_slots: [String]? }
+        var list: [String] = []
+        if let (data, _) = try? await URLSession.shared.wrData(from: url) {
+            list = (try? JSONDecoder().decode(Resp.self, from: data))?.free_slots ?? []
+        }
+        await MainActor.run { slots = list; isLoadingSlots = false }
+    }
+
+    func save() {
+        isSaving = true
+        error = nil
+        var payload: [String: Any] = [
+            "action": isNew ? "book" : "move",
+            "table_id": tableId,
+            "date": days[dayOffset].key,
+            "time_slot": slot
+        ]
+        if let b = booking { payload["id"] = b.id }
+        postJSON("app-company-tables.php", payload) { ok, err in
+            isSaving = false
+            if ok { onDone(true); dismiss() } else { error = err ?? "Kunne ikke gemme reservationen" }
+        }
     }
 }
 
