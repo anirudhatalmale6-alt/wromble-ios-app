@@ -381,9 +381,22 @@ class CartManager: ObservableObject {
                 items[idx].quantity -= 1
             } else {
                 items.remove(at: idx)
-                if items.isEmpty { restaurantId = 0; restaurantName = "" }
+                if items.isEmpty {
+                    restaurantId = 0; restaurantName = ""
+                    // Toemmes kurven, starter kunden forfra - saa app'en spoerger IGEN
+                    // om bordbestilling/levering/afhentning naeste gang. Reservationen
+                    // beholdes; den er en rigtig booking hos forretningen.
+                    resetChoices()
+                }
             }
         }
+    }
+
+    // Nulstiller kundens valg, men IKKE en reservation der allerede er lavet
+    func resetChoices() {
+        orderMode = ""
+        preorder = false
+        preorderAt = nil
     }
 
     func clearTableReservation() { tableReservationId = 0; tableReservationLabel = "" }
@@ -6201,8 +6214,10 @@ struct RestaurantDetailView: View {
         // Foerste vare: spoerg hvordan kunden vil bestille - bordbestilling,
         // levering eller afhentning. Sidder kunden allerede ved et scannet bord
         // (eller har reserveret et), er valget givet.
+        // Spoerg hver gang kunden starter en NY bestilling - ogsaa efter en toemt kurv.
+        // Kun et scannet bord springer valget over.
         let alreadyStarted = cart.restaurantId == restaurant.id && !cart.items.isEmpty && !cart.orderMode.isEmpty
-        if scannedTable == nil && cart.tableReservationId == 0 && !alreadyStarted {
+        if scannedTable == nil && !alreadyStarted {
             modeItem = item
             showModeSheet = true
             return
@@ -6235,7 +6250,14 @@ struct RestaurantDetailView: View {
             cart.preorder = true
             cart.preorderAt = openState.nextOpenAt
         }
-        if mode == "table" { goToBooking = true }
+        if mode == "table" {
+            // Har kunden allerede et bord, genbruges det - ellers vaelges tid nu.
+            // (Ellers ville man booke bord nummer to efter en toemt kurv.)
+            if cart.tableReservationId == 0 { goToBooking = true }
+        } else {
+            // Levering/afhentning: ordren skal ikke laenger til bordet
+            cart.clearTableReservation()
+        }
     }
 
     func openInMaps() {
