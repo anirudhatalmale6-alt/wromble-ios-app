@@ -3243,6 +3243,7 @@ struct TableBookingView: View {
     @State private var isBooking = false
     @State private var toast: String?
     @State private var confirmSlot: String?
+    @State private var loadError: String?
 
     var days: [(key: String, label: String)] {
         let keyFmt = DateFormatter(); keyFmt.dateFormat = "yyyy-MM-dd"
@@ -3261,6 +3262,13 @@ struct TableBookingView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Hvilken forretning bookes der bord hos - saa der ikke er tvivl om,
+            // hvem den tomme liste hoerer til.
+            if !companyName.isEmpty {
+                Text(companyName).font(.headline)
+                    .padding(.horizontal, 20).padding(.top, 10)
+            }
+
             // Dagsvaelger
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -3278,10 +3286,27 @@ struct TableBookingView: View {
 
             if isLoading {
                 HStack { Spacer(); ProgressView().padding(40); Spacer() }
+            } else if let e = loadError {
+                // Gik kaldet galt (ingen forbindelse, udloebet login), skal der staa
+                // hvad der skete - ikke "ingen borde", som er en anden fejl.
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(e).font(.subheadline).foregroundColor(.secondary)
+                    Button("Proev igen") { Task { await load() } }
+                        .font(.subheadline.weight(.bold)).foregroundColor(wrombleRed)
+                }.padding(.horizontal, 20).padding(.top, 30)
             } else if tables.isEmpty {
-                Text("Restauranten har ikke oprettet nogen borde endnu.")
-                    .font(.subheadline).foregroundColor(.secondary)
-                    .padding(.horizontal, 20).padding(.top, 30)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("\(companyName.isEmpty ? "Forretningen" : companyName) har ikke oprettet nogen borde endnu.")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Bordbestilling virker foerst, naar forretningen selv har oprettet sine borde. Det goer den under Administrer \u{2192} Borde i firma-login.")
+                        .font(.footnote).foregroundColor(.secondary)
+                    Button("Bestil til afhentning i stedet") {
+                        CartManager.shared.orderMode = "pickup"
+                        CartManager.shared.clearTableReservation()
+                        dismiss()
+                    }
+                    .font(.subheadline.weight(.bold)).foregroundColor(wrombleRed).padding(.top, 4)
+                }.padding(.horizontal, 20).padding(.top, 26)
             } else {
                 Text("Vaelg bord").font(.headline).padding(.horizontal, 20).padding(.bottom, 6)
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -3340,10 +3365,22 @@ struct TableBookingView: View {
     }
 
     func load() async {
-        await MainActor.run { isLoading = true }
+        await MainActor.run { isLoading = true; loadError = nil }
         guard let url = URL(string: "\(baseURL)/api/app-table-booking.php?company_id=\(companyId)&date=\(days[dayOffset].key)") else { return }
         do {
             let (data, _) = try await URLSession.shared.wrData(from: url)
+            // Serveren svarer {"error": "..."} ved fx udloebet login. Uden dette tjek
+            // fejler afkodningen, og skaermen paastaar at der ikke er nogen borde.
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let msg = obj["error"] as? String, !msg.isEmpty {
+                await MainActor.run {
+                    loadError = (obj["auth_required"] as? Bool == true)
+                        ? "Du skal vaere logget ind som kunde for at booke bord."
+                        : msg
+                    tables = []; isLoading = false
+                }
+                return
+            }
             struct Resp: Codable { let tables: [WrombleBookableTable] }
             let r = try JSONDecoder().decode(Resp.self, from: data)
             await MainActor.run {
@@ -3355,7 +3392,7 @@ struct TableBookingView: View {
                 isLoading = false
             }
         } catch {
-            await MainActor.run { isLoading = false; showToast("Kunne ikke hente ledige tider") }
+            await MainActor.run { isLoading = false; loadError = "Kunne ikke hente ledige tider. Tjek din forbindelse." }
         }
     }
 
