@@ -3212,6 +3212,83 @@ struct CompanyHoursView: View {
     }
 }
 
+// MARK: - Valg af bestillingsmaade (eget ark)
+// Erstatter Apples confirmationDialog: den kunne ikke styles, brak overskriften
+// midt i en saetning og laa midt paa skaermen. Dette er et rigtigt bundark med
+// kort, farvet ikon, undertekst og pil - samme udseende som Android.
+struct OrderModeSheet: View {
+    let isOpenNow: Bool
+    let showTable: Bool
+    let reopenText: String?
+    var onPick: (String) -> Void
+    var onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(isOpenNow ? "Hvordan vil du bestille?" : "Butikken er lukket lige nu")
+                .font(.title3.weight(.bold))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 22)
+            Text(isOpenNow
+                 ? "Vaelg hvordan du vil have din bestilling."
+                 : "Du kan stadig forudbestille." + (reopenText.map { " Aabner \($0)." } ?? ""))
+                .font(.subheadline).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 5)
+
+            if showTable {
+                row("fork.knife", Color(red: 0.94, green: 0.64, blue: 0.16),
+                    isOpenNow ? "Bordbestilling" : "Forudbestil bord",
+                    "Reservér bord og bestil til bordet") { onPick("table") }
+            }
+            row("bicycle", Color(red: 0.23, green: 0.63, blue: 0.94),
+                isOpenNow ? "Levering" : "Forudbestil levering",
+                "Vi kører varerne hjem til dig") { onPick("delivery") }
+            row("bag.fill", wrombleRed,
+                isOpenNow ? "Afhentning" : "Forudbestil afhentning",
+                "Du henter selv i butikken") { onPick("pickup") }
+
+            Button(action: onCancel) {
+                Text("Fortryd").font(.body.weight(.semibold))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 14)
+            }
+            .padding(.top, 6)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 18)
+        .presentationDetents([.height(showTable ? 430 : 340)])
+        .presentationDragIndicator(.visible)
+    }
+
+    @ViewBuilder
+    private func row(_ icon: String, _ tint: Color, _ title: String,
+                     _ subtitle: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 13) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12).fill(tint.opacity(0.16))
+                    Image(systemName: icon).font(.system(size: 19, weight: .semibold)).foregroundColor(tint)
+                }.frame(width: 44, height: 44)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.body.weight(.bold)).foregroundColor(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(subtitle).font(.footnote).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.footnote).foregroundColor(Color(.tertiaryLabel))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(Color(.secondarySystemBackground))
+            .cornerRadius(16)
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 10)
+    }
+}
+
 // MARK: - Bordbestilling (kunde)
 // Samme reservationer som paa wromble.dk: api/app-table-booking.php gemmer i
 // users_company_tables_time i hjemmesidens eget format, saa en booking lavet i
@@ -3244,6 +3321,8 @@ struct TableBookingView: View {
     @State private var toast: String?
     @State private var confirmSlot: String?
     @State private var loadError: String?
+    @State private var needsLogin = false
+    @State private var showLogin = false
 
     var days: [(key: String, label: String)] {
         let keyFmt = DateFormatter(); keyFmt.dateFormat = "yyyy-MM-dd"
@@ -3286,9 +3365,24 @@ struct TableBookingView: View {
 
             if isLoading {
                 HStack { Spacer(); ProgressView().padding(40); Spacer() }
+            } else if needsLogin {
+                // Ikke logget ind: sig det ligeud, og tilbyd login med det samme
+                // i stedet for en tom skaerm.
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Du er ikke logget ind").font(.subheadline.weight(.bold))
+                    Text("Du skal vaere logget ind som kunde for at reservere et bord. Reservationen bliver gemt paa din konto, saa forretningen ved hvem der kommer.")
+                        .font(.footnote).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(action: { showLogin = true }) {
+                        Text("Log ind").font(.subheadline.weight(.bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity).padding(.vertical, 13)
+                            .background(wrombleRed).cornerRadius(14)
+                    }.padding(.top, 6)
+                }.padding(.horizontal, 20).padding(.top, 26)
             } else if let e = loadError {
-                // Gik kaldet galt (ingen forbindelse, udloebet login), skal der staa
-                // hvad der skete - ikke "ingen borde", som er en anden fejl.
+                // Gik kaldet galt (ingen forbindelse), skal der staa hvad der skete
+                // - ikke "ingen borde", som er en anden fejl.
                 VStack(alignment: .leading, spacing: 12) {
                     Text(e).font(.subheadline).foregroundColor(.secondary)
                     Button("Proev igen") { Task { await load() } }
@@ -3353,6 +3447,27 @@ struct TableBookingView: View {
         .navigationTitle("Book bord")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+        .sheet(isPresented: $showLogin) {
+            NavigationStack {
+                LoginView(onLogin: { user in
+                    if user.id > 0 {
+                        UserDefaults.standard.set(user.id, forKey: "loggedInUserId")
+                        UserDefaults.standard.set("\(user.id)", forKey: "userId")
+                        UserDefaults.standard.set(user.name, forKey: "loggedInUserName")
+                        UserDefaults.standard.set(user.email, forKey: "loggedInUserEmail")
+                        registerPushToken(userId: user.id)
+                        showLogin = false
+                        // Hent tiderne igen med det samme - nu med gyldigt login
+                        Task { await load() }
+                    }
+                })
+                .navigationTitle("Log ind for at booke bord")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Luk") { showLogin = false } }
+                }
+            }
+        }
         .alert("Reservér bord \(selectedTable?.table_number ?? 0)?",
                isPresented: Binding(get: { confirmSlot != nil },
                                     set: { if !$0 { confirmSlot = nil } })) {
@@ -3365,7 +3480,7 @@ struct TableBookingView: View {
     }
 
     func load() async {
-        await MainActor.run { isLoading = true; loadError = nil }
+        await MainActor.run { isLoading = true; loadError = nil; needsLogin = false }
         guard let url = URL(string: "\(baseURL)/api/app-table-booking.php?company_id=\(companyId)&date=\(days[dayOffset].key)") else { return }
         do {
             let (data, _) = try await URLSession.shared.wrData(from: url)
@@ -3373,10 +3488,11 @@ struct TableBookingView: View {
             // fejler afkodningen, og skaermen paastaar at der ikke er nogen borde.
             if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let msg = obj["error"] as? String, !msg.isEmpty {
+                let auth = (obj["auth_required"] as? Bool == true)
+                    || msg.lowercased().contains("ikke logget ind")
                 await MainActor.run {
-                    loadError = (obj["auth_required"] as? Bool == true)
-                        ? "Du skal vaere logget ind som kunde for at booke bord."
-                        : msg
+                    needsLogin = auth
+                    loadError = auth ? nil : msg
                     tables = []; isLoading = false
                 }
                 return
@@ -6090,18 +6206,21 @@ struct RestaurantDetailView: View {
         } message: {
             Text("Du har varer fra \(cart.restaurantName) i kurven. Vil du rydde den og tilfoeje fra \(restaurant.name)?")
         }
-        .confirmationDialog(isOpenNow ? "Hvordan vil du bestille?" : "Butikken er lukket lige nu",
-                            isPresented: $showModeSheet, titleVisibility: .visible) {
-            if tableCount > 0 {
-                Button(isOpenNow ? "Bordbestilling – reservér et bord" : "Forudbestil bord") { chooseMode("table") }
-            }
-            Button(isOpenNow ? "Levering – vi kører varerne ud" : "Forudbestil levering") { chooseMode("delivery") }
-            Button(isOpenNow ? "Afhentning – du henter selv" : "Forudbestil afhentning") { chooseMode("pickup") }
-            Button("Fortryd", role: .cancel) { modeItem = nil }
-        } message: {
-            if !isOpenNow {
-                Text("Du kan stadig forudbestille. " + (openState.nextOpenText.map { "Aabner \($0)." } ?? ""))
-            }
+        // Eget ark i stedet for Apples confirmationDialog - den kunne ikke styles,
+        // brak overskriften midt i en saetning og laa midt paa skaermen.
+        .sheet(isPresented: $showModeSheet) {
+            OrderModeSheet(
+                isOpenNow: isOpenNow,
+                showTable: tableCount > 0,
+                reopenText: openState.nextOpenText,
+                onPick: { mode in
+                    showModeSheet = false
+                    // Vent til arket ER lukket, ellers naar "Book bord"-skiftet
+                    // ikke igennem mens arket stadig forsvinder.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { chooseMode(mode) }
+                },
+                onCancel: { showModeSheet = false; modeItem = nil }
+            )
         }
         .alert("Butikken er lukket", isPresented: $showClosedAlert) {
             Button("OK", role: .cancel) { }
