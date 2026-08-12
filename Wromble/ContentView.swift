@@ -351,6 +351,10 @@ class CartManager: ObservableObject {
     // Hvordan kunden vil bestille - vaelges naar den foerste vare laegges i kurven:
     // "" = ikke valgt, "table" = bordbestilling, "delivery" = levering, "pickup" = afhentning
     @Published var orderMode: String = ""
+    // Forudbestilling: kunden bestiller mens butikken er lukket (eller til et
+    // reserveret bord). preorderAt er det tidspunkt maden skal vaere klar.
+    @Published var preorder: Bool = false
+    @Published var preorderAt: Date? = nil
 
     var total: Double { items.reduce(0) { $0 + $1.price * Double($1.quantity) } }
     var itemCount: Int { items.reduce(0) { $0 + $1.quantity } }
@@ -359,6 +363,7 @@ class CartManager: ObservableObject {
         if restaurantId != rid && restaurantId != 0 {
             items.removeAll()
             orderMode = ""            // bestillingsmaaden vaelges forfra i den nye butik
+            preorder = false; preorderAt = nil
             clearTableReservation()   // reservationen gaelder kun den restaurant den blev lavet til
         }
         restaurantId = rid
@@ -389,6 +394,8 @@ class CartManager: ObservableObject {
         restaurantId = 0
         restaurantName = ""
         orderMode = ""
+        preorder = false
+        preorderAt = nil
     }
 }
 
@@ -1389,6 +1396,9 @@ struct ShopOpenState {
     let isOpen: Bool
     let nextOpenText: String?   // fx "i dag kl. 17:00", "i morgen kl. 10:00", "Fredag kl. 11:00"
     let manuallyClosed: Bool
+    // Naeste aabningstidspunkt som rigtig dato. Bruges til forudbestilling, saa
+    // kurven selv foreslaar foerste tid butikken har aabent igen.
+    var nextOpenAt: Date? = nil
 }
 
 func wrombleShopOpenState(_ days: [CompanyHourDay], shopStatus: String = "") -> ShopOpenState {
@@ -1415,20 +1425,30 @@ func wrombleShopOpenState(_ days: [CompanyHourDay], shopStatus: String = "") -> 
     }
 
     var next: String? = nil
+    var nextAt: Date? = nil
+    // Bygger et rigtigt tidspunkt ud fra "HH:mm" og et antal dage frem
+    func dateFor(_ hhmm: String, daysAhead: Int) -> Date? {
+        let parts = hhmm.split(separator: ":")
+        guard parts.count >= 2, let h = Int(parts[0]), let m = Int(parts[1]) else { return nil }
+        guard let day = cal.date(byAdding: .day, value: daysAhead, to: Date()) else { return nil }
+        return cal.date(bySettingHour: h, minute: m, second: 0, of: day)
+    }
     if !manualClosed {
         if let t = today, !t.store_open.isEmpty, now < t.store_open {
             next = "i dag kl. \(t.store_open)"
+            nextAt = dateFor(t.store_open, daysAhead: 0)
         } else {
             for offset in 1...7 {
                 let idx = (todayIdx + offset) % 7
                 if let d = days.first(where: { $0.weekday == names[idx] }), !d.store_open.isEmpty {
                     next = (offset == 1 ? "i morgen" : names[idx]) + " kl. \(d.store_open)"
+                    nextAt = dateFor(d.store_open, daysAhead: offset)
                     break
                 }
             }
         }
     }
-    return ShopOpenState(isOpen: open, nextOpenText: next, manuallyClosed: manualClosed)
+    return ShopOpenState(isOpen: open, nextOpenText: next, manuallyClosed: manualClosed, nextOpenAt: nextAt)
 }
 
 struct CustomerProfileData: Codable {
@@ -3345,6 +3365,17 @@ struct TableBookingView: View {
                 CartManager.shared.tableReservationLabel =
                     "Bord \(t.table_number) · \(days[dayOffset].label) \(wrPrettySlot(slot))"
                 CartManager.shared.orderMode = "table"
+                // Maden skal vaere klar naar bordet er reserveret - ikke "hurtigst
+                // muligt". Saetter oensket tid = bordets starttidspunkt.
+                let startHm = String(wrPrettySlot(slot).split(separator: "-").first ?? "")
+                    .trimmingCharacters(in: .whitespaces)
+                let f = DateFormatter()
+                f.locale = Locale(identifier: "da_DK")
+                f.dateFormat = "yyyy-MM-dd HH:mm"
+                if let at = f.date(from: "\(days[dayOffset].key) \(startHm)") {
+                    CartManager.shared.preorder = true
+                    CartManager.shared.preorderAt = at
+                }
                 showToast("Bordet er reserveret")
                 Task { await load() }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { dismiss() }
@@ -6009,13 +6040,18 @@ struct RestaurantDetailView: View {
         } message: {
             Text("Du har varer fra \(cart.restaurantName) i kurven. Vil du rydde den og tilfoeje fra \(restaurant.name)?")
         }
-        .confirmationDialog("Hvordan vil du bestille?", isPresented: $showModeSheet, titleVisibility: .visible) {
+        .confirmationDialog(isOpenNow ? "Hvordan vil du bestille?" : "Butikken er lukket lige nu",
+                            isPresented: $showModeSheet, titleVisibility: .visible) {
             if tableCount > 0 {
-                Button("Bordbestilling – reservér et bord") { chooseMode("table") }
+                Button(isOpenNow ? "Bordbestilling – reservér et bord" : "Forudbestil bord") { chooseMode("table") }
             }
-            Button("Levering – vi kører varerne ud") { chooseMode("delivery") }
-            Button("Afhentning – du henter selv") { chooseMode("pickup") }
+            Button(isOpenNow ? "Levering – vi kører varerne ud" : "Forudbestil levering") { chooseMode("delivery") }
+            Button(isOpenNow ? "Afhentning – du henter selv" : "Forudbestil afhentning") { chooseMode("pickup") }
             Button("Fortryd", role: .cancel) { modeItem = nil }
+        } message: {
+            if !isOpenNow {
+                Text("Du kan stadig forudbestille. " + (openState.nextOpenText.map { "Aabner \($0)." } ?? ""))
+            }
         }
         .alert("Butikken er lukket", isPresented: $showClosedAlert) {
             Button("OK", role: .cancel) { }
@@ -6157,12 +6193,6 @@ struct RestaurantDetailView: View {
     }
 
     func addToCart(_ item: MenuItem) {
-        // Bloker bestilling naar butikken er lukket (aabningstider eller manuel lukning)
-        guard isOpenNow else {
-            UINotificationFeedbackGenerator().notificationOccurred(.warning)
-            showClosedAlert = true
-            return
-        }
         if cart.restaurantId != 0 && cart.restaurantId != restaurant.id && !cart.items.isEmpty {
             pendingItem = item
             showClearCartAlert = true
@@ -6177,17 +6207,34 @@ struct RestaurantDetailView: View {
             showModeSheet = true
             return
         }
+        // Lukket butik: kun tilladt naar kunden allerede har valgt forudbestilling.
+        // Har kunden reserveret et bord til senere, ER maden en forudbestilling.
+        if !isOpenNow && !cart.preorder {
+            if cart.tableReservationId > 0 {
+                cart.preorder = true
+                if cart.preorderAt == nil { cart.preorderAt = openState.nextOpenAt }
+            } else {
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                showClosedAlert = true
+                return
+            }
+        }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         cart.addItem(item, forRestaurant: restaurant.id, name: restaurant.name)
     }
 
-    // Laegger varen i kurven og husker den valgte bestillingsmaade
+    // Laegger varen i kurven og husker den valgte bestillingsmaade. Er butikken
+    // lukket, bliver bestillingen en forudbestilling til naeste aabningstid.
     func chooseMode(_ mode: String) {
         guard let item = modeItem else { return }
         modeItem = nil
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         cart.addItem(item, forRestaurant: restaurant.id, name: restaurant.name)
         cart.orderMode = mode
+        if !isOpenNow {
+            cart.preorder = true
+            cart.preorderAt = openState.nextOpenAt
+        }
         if mode == "table" { goToBooking = true }
     }
 
@@ -6361,6 +6408,9 @@ struct CartView: View {
     @State private var hoursDays: [CompanyHourDay] = []
     @State private var shopStatus = ""
     var cartOpenState: ShopOpenState { wrombleShopOpenState(hoursDays, shopStatus: shopStatus) }
+    // Der kan bestilles naar butikken er aaben, naar aabningstider er ukendte,
+    // eller naar det er en FORUDBESTILLING til et senere tidspunkt.
+    var canOrderNow: Bool { cartOpenState.isOpen || hoursDays.isEmpty || cart.preorder }
     var cartClosedMessage: String {
         if cartOpenState.manuallyClosed { return "\(cart.restaurantName) er lukket lige nu. Du kan bestille, naar butikken aabner igen." }
         if let n = cartOpenState.nextOpenText { return "\(cart.restaurantName) er lukket lige nu – aabner \(n)." }
@@ -6469,7 +6519,20 @@ struct CartView: View {
 
             // Hvornaar oensker kunden ordren? Standard = hurtigst muligt.
             // Vaelges et tidspunkt, ser forretningen det direkte paa ordren.
-            Section(header: Text(isDelivery ? "Leveringstidspunkt" : "Afhentningstidspunkt")) {
+            // Ved FORUDBESTILLING (lukket butik eller bordreservation) giver
+            // "hurtigst muligt" ingen mening - der vaelges altid et tidspunkt.
+            Section(header: Text(cart.preorder ? "Forudbestilling"
+                                               : (isDelivery ? "Leveringstidspunkt" : "Afhentningstidspunkt"))) {
+                if cart.preorder {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "clock.badge.checkmark").foregroundColor(wrombleRed)
+                        Text(isTableOrder
+                             ? "Maden er klar naar du saetter dig ved bordet."
+                             : "Butikken er lukket nu. Din bestilling sendes ind til det tidspunkt du vaelger.")
+                            .font(.subheadline).foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
                 Picker("", selection: $scheduleLater) {
                     Text("Hurtigst muligt (ca. 1 time)").tag(false)
                     Text("Vaelg tid").tag(true)
@@ -6479,6 +6542,7 @@ struct CartView: View {
                 .onChange(of: scheduleLater) { later in
                     // Naar kunden vaelger et tidspunkt, saet minimum til 1 time frem.
                     if later && wantedTime < earliestOrderTime { wantedTime = earliestOrderTime }
+                }
                 }
 
                 if scheduleLater {
@@ -6569,7 +6633,7 @@ struct CartView: View {
                 }
             }
 
-            if !cartOpenState.isOpen && !hoursDays.isEmpty {
+            if !cartOpenState.isOpen && !hoursDays.isEmpty && !cart.preorder {
                 Section {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "clock.badge.exclamationmark").foregroundColor(wrombleRed)
@@ -6585,15 +6649,16 @@ struct CartView: View {
                         if isOrdering {
                             ProgressView().tint(.white)
                         } else {
-                            Text(cartOpenState.isOpen || hoursDays.isEmpty ? "Bestil nu" : "Butikken er lukket").font(.headline)
+                            Text(canOrderNow ? (cart.preorder && !cartOpenState.isOpen ? "Send forudbestilling" : "Bestil nu")
+                                             : "Butikken er lukket").font(.headline)
                         }
                         Spacer()
                     }
                     .foregroundColor(.white)
                     .padding(.vertical, 6)
                 }
-                .listRowBackground((cartOpenState.isOpen || hoursDays.isEmpty) ? wrombleRed : Color.gray)
-                .disabled(isOrdering || (!cartOpenState.isOpen && !hoursDays.isEmpty))
+                .listRowBackground(canOrderNow ? wrombleRed : Color.gray)
+                .disabled(isOrdering || !canOrderNow)
             }
         }
         .navigationTitle("Din kurv")
@@ -6633,6 +6698,13 @@ struct CartView: View {
             // Kunden valgte allerede levering/afhentning da varen kom i kurven
             if cart.orderMode == "delivery" { isDelivery = true }
             else if cart.orderMode == "pickup" || isTableOrder { isDelivery = false }
+            // Forudbestilling: foreslaa foerste aabningstid (eller bordets tid),
+            // dog altid mindst 1 time frem som serveren kraever.
+            if cart.preorder {
+                scheduleLater = true
+                let target = cart.preorderAt ?? earliestOrderTime
+                wantedTime = max(target, earliestOrderTime)
+            }
         }
         .task { await loadCartHours() }
     }
@@ -6757,8 +6829,9 @@ struct CartView: View {
     }
 
     func placeOrder() {
-        // Sikkerhed: bloker ordre hvis butikken er lukket (aabningstider eller manuel lukning)
-        if !cartOpenState.isOpen && !hoursDays.isEmpty {
+        // Sikkerhed: bloker ordre hvis butikken er lukket (aabningstider eller manuel
+        // lukning) - MEN forudbestillinger maa gerne sendes ind til et senere tidspunkt.
+        if !canOrderNow {
             errorMessage = cartClosedMessage
             return
         }
