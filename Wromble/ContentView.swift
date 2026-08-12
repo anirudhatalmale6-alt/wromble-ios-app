@@ -311,6 +311,12 @@ struct OrderStatus {
     var driverLng: Double = 0
     var riderLive: Bool = false
     var etaText: String = ""
+    // Bordbestilling - saa sporingen kan vise bord og tidsrum i stedet for "Afhentning"
+    var isTable: Bool = false
+    var tableNumber: Int = 0
+    var tablePersons: Int = 0
+    var tableTime: String = ""
+    var tableDate: String = ""
 }
 
 // MARK: - Favorites Manager
@@ -2318,22 +2324,43 @@ struct CompanyOrdersView: View {
     func orderCard(_ order: CompanyOrder) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Ordre #\(order.id)").font(.headline)
+                // En bordbestilling skal hedde en bordbestilling - ikke bare "Ordre".
+                Text(order.table ? "Bordbestilling #\(order.id)" : "Ordre #\(order.id)").font(.headline)
                 Spacer()
                 Text(String(format: "%.0f kr", order.amount)).font(.headline).foregroundColor(wrombleRed)
             }
 
             HStack(spacing: 8) {
-                chipTag(order.delivery ? "Levering" : "Afhentning", icon: order.delivery ? "bicycle" : "bag.fill")
-                chipTag(paymentLabel(order.payment), icon: "creditcard.fill")
+                // Bordordrer er hverken levering eller afhentning - maden skal til bordet.
                 if order.table {
-                    chipTag((order.tableNumber ?? 0) > 0 ? "Bord \(order.tableNumber ?? 0)" : "Bord", icon: "fork.knife")
+                    chipTag("Bordbestilling", icon: "fork.knife")
+                } else {
+                    chipTag(order.delivery ? "Levering" : "Afhentning", icon: order.delivery ? "bicycle" : "bag.fill")
                 }
+                chipTag(paymentLabel(order.payment), icon: "creditcard.fill")
             }
 
-            if order.table, let tt = order.tableTime, !tt.isEmpty {
-                Label("Bordreservation: \(tt)", systemImage: "calendar")
-                    .font(.caption).foregroundColor(.secondary)
+            // Bordet fremhaevet, saa personalet kan se det med et blik
+            if order.table {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text((order.tableNumber ?? 0) > 0 ? "Bord \(order.tableNumber ?? 0)" : "Bord")
+                            .font(.title3.weight(.heavy)).foregroundColor(.white)
+                        if let tt = order.tableTime, !tt.isEmpty {
+                            Text(tt).font(.caption.weight(.semibold)).foregroundColor(.white.opacity(0.9))
+                        }
+                    }
+                    Spacer()
+                    if (order.tablePersons ?? 0) > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "person.2.fill")
+                            Text("\(order.tablePersons ?? 0) pers.")
+                        }
+                        .font(.caption.weight(.bold)).foregroundColor(.white.opacity(0.9))
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(wrombleRed).cornerRadius(12)
             }
 
             // Tidspunkter: hvornaar ordren kom ind + hvornaar den oenskes klar
@@ -6563,6 +6590,12 @@ struct CartView: View {
     @State private var isOrdering = false
     @State private var showOrderConfirmation = false
     @State private var orderId: Int = 0
+    // Kvitteringsskaermen: hvad serveren rent faktisk gjorde med ordren
+    @State private var orderAutoAccepted = false
+    @State private var orderIsTable = false
+    @State private var orderTableNumber = 0
+    @State private var orderTableTime = ""
+    @State private var orderTableDate = ""
     @State private var showLoginSheet = false
     @State private var loggedInUser: UserProfile?
     @State private var errorMessage = ""
@@ -6890,15 +6923,47 @@ struct CartView: View {
         .task { await loadCartHours() }
     }
 
+    // Auto-accept: forretningen bekraefter automatisk, saa der kommer ALDRIG en manuel
+    // bekraeftelse. Stod der "afventer bekraeftelse", ledte kunden efter noget der
+    // ikke findes - og forretningen har ingen bekraeft-knap at trykke paa.
+    var confirmationText: String {
+        if orderAutoAccepted {
+            return orderIsTable
+                ? "Din bordbestilling er bekraeftet af restauranten. Bordet er reserveret til dig."
+                : "Din ordre er bekraeftet af restauranten og goeres klar nu."
+        }
+        return orderIsTable
+            ? "Din bordbestilling er sendt til restauranten og afventer deres bekraeftelse. Du faar besked, saa snart den er accepteret."
+            : "Din ordre er sendt til restauranten og afventer nu deres bekraeftelse. Du faar besked, saa snart den er accepteret."
+    }
+
     var orderConfirmation: some View {
         VStack(spacing: 24) {
             Spacer()
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 80)).foregroundColor(.green)
-            Text("Ordre modtaget!").font(.title.bold())
-            Text("Ordrenummer: #\(orderId)")
+            Text(orderIsTable ? "Bordbestilling modtaget!" : "Ordre modtaget!").font(.title.bold())
+            Text((orderIsTable ? "Bordbestilling: #" : "Ordrenummer: #") + "\(orderId)")
                 .font(.title3).foregroundColor(.secondary)
-            Text("Din ordre er sendt til restauranten og afventer nu deres bekraeftelse. Du faar besked, saa snart den er accepteret.")
+
+            // Bordet vises med det samme paa kvitteringen
+            if orderIsTable && orderTableNumber > 0 {
+                VStack(spacing: 6) {
+                    Text("Bord \(orderTableNumber)").font(.system(size: 26, weight: .heavy))
+                        .foregroundColor(.white)
+                    if !orderTableTime.isEmpty {
+                        Text([orderTableDate, orderTableTime].filter { !$0.isEmpty }.joined(separator: " · "))
+                            .font(.subheadline.weight(.semibold)).foregroundColor(.white.opacity(0.92))
+                    }
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 16)
+                .background(wrombleRed).cornerRadius(16)
+                .padding(.horizontal, 40)
+            }
+
+            // Teksten skal passe til virkeligheden: auto-accepterer forretningen,
+            // ER ordren bekraeftet, og der kommer ingen manuel bekraeftelse.
+            Text(confirmationText)
                 .font(.body).foregroundColor(.secondary)
                 .multilineTextAlignment(.center).padding(.horizontal, 40)
 
@@ -7092,6 +7157,13 @@ struct CartView: View {
                 }
                 if let oid = json["order_id"] as? Int {
                     orderId = oid
+                    // Serveren fortaeller om ordren allerede er bekraeftet (auto-accept)
+                    // og om det er en bordbestilling - kvitteringen skal sige det samme.
+                    orderAutoAccepted = (json["auto_accepted"] as? Bool) ?? false
+                    orderIsTable      = (json["is_table"] as? Bool) ?? false
+                    orderTableNumber  = json["table_number"] as? Int ?? 0
+                    orderTableTime    = json["table_time"] as? String ?? ""
+                    orderTableDate    = json["table_date"] as? String ?? ""
                     showOrderConfirmation = true
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     scheduleOrderNotification(orderId: oid)
@@ -7504,9 +7576,17 @@ struct OrderTrackingView: View {
                     .padding(.horizontal, 16)
                 }
 
+                // Bordbestilling: bordet er det vigtigste paa skaermen, saa det staar
+                // oeverst i sit eget kort med nummer, tid og antal personer.
+                if let s = status, s.isTable {
+                    tableCard(s)
+                }
+
                 // Ordredetaljer
                 VStack(spacing: 0) {
-                    detailRow(icon: "number", title: "Ordrenummer", value: "#\(orderId)")
+                    detailRow(icon: "number",
+                              title: (status?.isTable ?? false) ? "Bordbestilling" : "Ordrenummer",
+                              value: "#\(orderId)")
                     Divider().padding(.leading, 50)
                     detailRow(icon: "building.2.fill", title: "Sted", value: status?.companyName ?? initialCompany)
                     if let t = status?.total, t > 0 {
@@ -7532,7 +7612,8 @@ struct OrderTrackingView: View {
                                 }
                                 .foregroundColor(wrombleRed)
                             }
-                        } else {
+                        } else if !s.isTable {
+                            // Bordbestilling har ingen rute - maden bliver staaende i huset.
                             DeliveryRouteView(stage: stage,
                                               isDelivery: s.isDelivery,
                                               companyName: s.companyName.isEmpty ? initialCompany : s.companyName)
@@ -7543,7 +7624,8 @@ struct OrderTrackingView: View {
                             Button(action: { openInMaps() }) {
                                 HStack {
                                     Image(systemName: "arrow.triangle.turn.up.right.circle.fill")
-                                    Text(s.isDelivery ? "Åbn adressen i Kort (rutevejledning)" : "Rutevejledning til restauranten")
+                                    Text(s.isDelivery ? "Åbn adressen i Kort (rutevejledning)"
+                                                      : (s.isTable ? "Rutevejledning til bordet" : "Rutevejledning til restauranten"))
                                         .font(.subheadline.weight(.semibold))
                                 }
                                 .foregroundColor(wrombleRed)
@@ -7574,6 +7656,63 @@ struct OrderTrackingView: View {
         case 1: return "fork.knife"
         default: return "clock.badge.checkmark"
         }
+    }
+
+    // Bordkortet: stort bordnummer, tidsrum, dato og antal personer. Det er den
+    // vigtigste information paa en bordbestilling, saa den skal fylde.
+    @ViewBuilder
+    func tableCard(_ s: OrderStatus) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "fork.knife").font(.subheadline.weight(.bold))
+                Text("BORDBESTILLING").font(.caption.weight(.heavy)).kerning(0.6)
+                Spacer()
+            }
+            .foregroundColor(.white.opacity(0.9))
+
+            HStack(alignment: .lastTextBaseline, spacing: 10) {
+                if s.tableNumber > 0 {
+                    Text("Bord \(s.tableNumber)")
+                        .font(.system(size: 30, weight: .heavy)).foregroundColor(.white)
+                } else {
+                    Text("Bord reserveret")
+                        .font(.system(size: 24, weight: .heavy)).foregroundColor(.white)
+                }
+                Spacer()
+                if s.tablePersons > 0 {
+                    HStack(spacing: 5) {
+                        Image(systemName: "person.2.fill")
+                        Text("\(s.tablePersons) pers.")
+                    }
+                    .font(.subheadline.weight(.bold)).foregroundColor(.white.opacity(0.92))
+                }
+            }
+
+            if !s.tableTime.isEmpty || !s.tableDate.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "clock.fill")
+                    Text([s.tableDate, s.tableTime].filter { !$0.isEmpty }.joined(separator: " · "))
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .background(Color.white.opacity(0.16))
+                .cornerRadius(11)
+            }
+
+            Text("Maden bliver serveret ved bordet. Vis dette nummer i restauranten.")
+                .font(.footnote).foregroundColor(.white.opacity(0.85))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(colors: [wrombleRed, Color(red: 0.66, green: 0.08, blue: 0.06)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+        )
+        .cornerRadius(18)
+        .padding(.horizontal, 20)
     }
 
     func detailRow(icon: String, title: String, value: String) -> some View {
@@ -7688,7 +7827,12 @@ struct OrderTrackingView: View {
                 driverLat: (json["rider_lat"] as? NSNumber)?.doubleValue ?? 0,
                 driverLng: (json["rider_lng"] as? NSNumber)?.doubleValue ?? 0,
                 riderLive: (json["rider_live"] as? Bool) ?? false,
-                etaText: json["eta_text"] as? String ?? "")
+                etaText: json["eta_text"] as? String ?? "",
+                isTable: (json["is_table"] as? Bool) ?? false,
+                tableNumber: json["table_number"] as? Int ?? 0,
+                tablePersons: json["table_persons"] as? Int ?? 0,
+                tableTime: json["table_time"] as? String ?? "",
+                tableDate: json["table_date"] as? String ?? "")
             await MainActor.run {
                 // Behagelig lyd til kunden hver gang ordren rykker et trin frem.
                 if let prev = lastStage, s.stage >= 0, s.stage > prev,
