@@ -3455,7 +3455,10 @@ struct TableBookingView: View {
                         UserDefaults.standard.set("\(user.id)", forKey: "userId")
                         UserDefaults.standard.set(user.name, forKey: "loggedInUserName")
                         UserDefaults.standard.set(user.email, forKey: "loggedInUserEmail")
-                        registerPushToken(userId: user.id)
+                        // Samme push-registrering som ved login i kurven
+                        // (registerPushToken er en metode paa CartView, ikke global).
+                        wrombleEnsurePushRegistered()
+                        wrombleSyncPushToken()
                         showLogin = false
                         // Hent tiderne igen med det samme - nu med gyldigt login
                         Task { await load() }
