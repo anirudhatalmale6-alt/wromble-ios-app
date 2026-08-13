@@ -1470,6 +1470,58 @@ func wrombleShopOpenState(_ days: [CompanyHourDay], shopStatus: String = "") -> 
     return ShopOpenState(isOpen: open, nextOpenText: next, manuallyClosed: manualClosed, nextOpenAt: nextAt)
 }
 
+// Alle aabne tidsrum omkring et referencetidspunkt (dagen foer og 8 dage frem),
+// som rigtige datoer. Haandterer lukketid efter midnat (18:00-02:00) og
+// doegnaabent (00:00-00:00). Levering bruger bring-tiderne naar de findes.
+private func wrombleOpenWindows(_ days: [CompanyHourDay], around ref: Date, isDelivery: Bool) -> [(start: Date, end: Date)] {
+    let names = ["Søndag", "Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag"]
+    let cal = Calendar.current
+    func mins(_ hhmm: String) -> Int? {
+        let p = hhmm.split(separator: ":")
+        guard p.count >= 2, let h = Int(p[0]), let m = Int(p[1]) else { return nil }
+        return h * 60 + m
+    }
+    var out: [(start: Date, end: Date)] = []
+    let refDay = cal.startOfDay(for: ref)
+    for offset in -1...8 {
+        guard let dayStart = cal.date(byAdding: .day, value: offset, to: refDay) else { continue }
+        let idx = max(0, min(6, cal.component(.weekday, from: dayStart) - 1))
+        guard let d = days.first(where: { $0.weekday == names[idx] }) else { continue }
+        // Levering har egne tider - er de tomme, gaelder butikkens almindelige tider
+        var o = isDelivery ? d.bring_open : d.store_open
+        var c = isDelivery ? d.bring_close : d.store_close
+        if o.isEmpty || c.isEmpty { o = d.store_open; c = d.store_close }
+        guard let om = mins(o), let cm = mins(c) else { continue }
+        if om == cm {
+            guard let end = cal.date(byAdding: .day, value: 1, to: dayStart) else { continue }
+            out.append((dayStart, end))          // doegnaabent
+            continue
+        }
+        guard let s = cal.date(byAdding: .minute, value: om, to: dayStart) else { continue }
+        var extra = 0
+        if cm < om { extra = 24 * 60 }           // lukker efter midnat
+        guard let e = cal.date(byAdding: .minute, value: cm + extra, to: dayStart) else { continue }
+        out.append((s, e))
+    }
+    return out
+}
+
+// Foerste tidspunkt fra og med "from" hvor butikken har aabent. Er "from" allerede
+// inden for aabningstiden, returneres det uaendret. nil = ingen tider kendt.
+func wrombleEarliestOpenAt(_ days: [CompanyHourDay], from: Date, isDelivery: Bool = false) -> Date? {
+    let windows = wrombleOpenWindows(days, around: from, isDelivery: isDelivery)
+    if windows.isEmpty { return nil }
+    if windows.contains(where: { from >= $0.start && from < $0.end }) { return from }
+    return windows.map { $0.start }.filter { $0 > from }.min()
+}
+
+// Har butikken aabent paa netop dette tidspunkt? Ukendte tider = ja (bloker ikke).
+func wrombleIsOpenAt(_ days: [CompanyHourDay], _ date: Date, isDelivery: Bool = false) -> Bool {
+    let windows = wrombleOpenWindows(days, around: date, isDelivery: isDelivery)
+    if windows.isEmpty { return true }
+    return windows.contains { date >= $0.start && date < $0.end }
+}
+
 struct CustomerProfileData: Codable {
     var id: Int
     var firstname: String
@@ -6616,8 +6668,34 @@ struct CartView: View {
     // Hurtigst mulige tid er altid mindst 1 time frem, saa chaufføeren/køekkenet har tid.
     @State private var scheduleLater = false
     @State private var wantedTime = Date().addingTimeInterval(60 * 60)
-    // Tidligst mulige bestillingstidspunkt: altid mindst 1 time fra nu.
-    private var earliestOrderTime: Date { Date().addingTimeInterval(60 * 60) }
+    // Tidligst mulige bestillingstidspunkt: mindst 1 time fra nu, OG butikken skal
+    // have aabent. Aabner forretningen fx kl. 06.00, kan der tidligst bestilles til
+    // kl. 06.00 - ikke "1 time fra nu" kl. 03.28 om natten.
+    private var earliestOrderTime: Date {
+        let lead = Date().addingTimeInterval(60 * 60)
+        return wrombleEarliestOpenAt(hoursDays, from: lead, isDelivery: isDelivery) ?? lead
+    }
+    // Forklaring under tidsvaelgeren - siger hvorfor tiden ikke kan vaelges tidligere.
+    private var earliestHintText: String {
+        let e = earliestOrderTime
+        let lead = Date().addingTimeInterval(60 * 60)
+        guard e > lead.addingTimeInterval(60) else { return "Tidligst mulige tid er 1 time fra nu." }
+        let cal = Calendar.current
+        let f = DateFormatter(); f.locale = Locale(identifier: "da_DK")
+        if cal.isDateInToday(e) { f.dateFormat = "'i dag kl.' HH:mm" }
+        else if cal.isDateInTomorrow(e) { f.dateFormat = "'i morgen kl.' HH:mm" }
+        else { f.dateFormat = "EEEE 'd.' d/M 'kl.' HH:mm" }
+        return "\(cart.restaurantName) aabner \(f.string(from: e)) – det er den tidligste tid du kan vaelge."
+    }
+    // Holder den valgte tid inden for aabningstiden. Vaelger kunden et tidspunkt hvor
+    // butikken har lukket, rykkes det frem til foerste aabne tid.
+    private func clampWantedTime() {
+        if wantedTime < earliestOrderTime { wantedTime = earliestOrderTime; return }
+        if !wrombleIsOpenAt(hoursDays, wantedTime, isDelivery: isDelivery),
+           let snap = wrombleEarliestOpenAt(hoursDays, from: wantedTime, isDelivery: isDelivery) {
+            wantedTime = snap
+        }
+    }
     // Aabningstider for butikken i kurven - saa der ikke kan bestilles naar lukket
     @State private var hoursDays: [CompanyHourDay] = []
     @State private var shopStatus = ""
@@ -6754,19 +6832,30 @@ struct CartView: View {
                 .pickerStyle(.segmented)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 .onChange(of: scheduleLater) { later in
-                    // Naar kunden vaelger et tidspunkt, saet minimum til 1 time frem.
-                    if later && wantedTime < earliestOrderTime { wantedTime = earliestOrderTime }
+                    // Naar kunden vaelger et tidspunkt, start paa foerste lovlige tid:
+                    // mindst 1 time frem og inden for aabningstiden.
+                    if later { clampWantedTime() }
                 }
                 }
 
+                // Naar butikken naar at lukke inden for den time "hurtigst muligt"
+                // tager, skal kunden ogsaa se hvornaar ordren saa bliver klar.
+                if !scheduleLater && earliestOrderTime > Date().addingTimeInterval(60 * 61) {
+                    Text(earliestHintText)
+                        .font(.caption2).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 if scheduleLater {
-                    DatePicker(isDelivery ? "Leveres" : "Afhentes",
+                    DatePicker(isTableOrder ? "Bordet" : (isDelivery ? "Leveres" : "Afhentes"),
                                selection: $wantedTime,
                                in: earliestOrderTime...,
                                displayedComponents: [.date, .hourAndMinute])
                         .environment(\.locale, Locale(identifier: "da_DK"))
-                    Text("Tidligst mulige tid er 1 time fra nu.")
+                        .onChange(of: wantedTime) { _ in clampWantedTime() }
+                    Text(earliestHintText)
                         .font(.caption2).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -6920,6 +7009,8 @@ struct CartView: View {
                 wantedTime = max(target, earliestOrderTime)
             }
         }
+        // Levering og afhentning kan have hver sine aabningstider
+        .onChange(of: isDelivery) { _ in clampWantedTime() }
         .task { await loadCartHours() }
     }
 
@@ -7099,7 +7190,13 @@ struct CartView: View {
             let (data, _) = try await URLSession.shared.wrData(from: url)
             struct Resp: Codable { let days: [CompanyHourDay]; let shop_status: String? }
             let r = try JSONDecoder().decode(Resp.self, from: data)
-            await MainActor.run { hoursDays = r.days; shopStatus = r.shop_status ?? "" }
+            await MainActor.run {
+                hoursDays = r.days; shopStatus = r.shop_status ?? ""
+                // Aabningstiderne kommer FOERST her - efter onAppear. Derfor skal den
+                // foreslaaede tid rykkes paa plads nu, ellers stod der "afhentning
+                // kl. 03.28" paa en butik der foerst aabner kl. 06.00.
+                clampWantedTime()
+            }
         } catch { }
     }
 
