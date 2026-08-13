@@ -61,18 +61,24 @@ func wrombleSyncPushToken() {
 // daempe en push der allerede er sendt. Derfor skal serveren vide besked: er lyden
 // slaaet fra, sendes push'en uden lyd; er notifikationer slaaet fra, sendes den slet ikke.
 // Uden det her blev lyden ved med at komme selvom man slog notifikationer fra i menuen.
-func wrombleSyncPushPrefs() {
+// includeNotifications = false ved automatisk synkronisering. notificationsEnabled
+// er nemlig false paa enheder der aldrig har gennemgaaet onboarding-tilladelsen, selv
+// om push virker fint - sendte vi den vaerdi automatisk, ville serveren holde op med
+// at sende til dem. Kun et bevidst tryk paa kontakten sender feltet med.
+func wrombleSyncPushPrefs(includeNotifications: Bool = true) {
     let token = AppState.shared.deviceToken
     guard !token.isEmpty else { return }
     guard let url = URL(string: "\(baseURL)/api/app-push-prefs.php") else { return }
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    let body: [String: Any] = [
+    var body: [String: Any] = [
         "token": token,
-        "notifications_enabled": AppState.shared.notificationsEnabled ? 1 : 0,
         "sound_enabled": UserDefaults.standard.bool(forKey: "wr_sound_off") ? 0 : 1,
     ]
+    if includeNotifications {
+        body["notifications_enabled"] = AppState.shared.notificationsEnabled ? 1 : 0
+    }
     request.httpBody = try? JSONSerialization.data(withJSONObject: body)
     URLSession.shared.dataTask(with: request).resume()
 }
@@ -103,7 +109,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         let token = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
         AppState.shared.deviceToken = token
         wrombleSyncPushToken()
-        wrombleSyncPushPrefs()   // enhedens lyd-valg skal ogsaa foelge med
+        wrombleSyncPushPrefs(includeNotifications: false)   // kun lyd-valget automatisk
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
@@ -111,7 +117,13 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .sound, .badge])
+        // Er lyden slaaet fra i menuen, skal notifikationen heller ikke give lyd mens
+        // app'en er aaben - her er det os der bestemmer, ikke serveren.
+        if UserDefaults.standard.bool(forKey: "wr_sound_off") {
+            completionHandler([.banner, .badge])
+        } else {
+            completionHandler([.banner, .sound, .badge])
+        }
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
