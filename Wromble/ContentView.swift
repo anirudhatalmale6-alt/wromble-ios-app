@@ -450,6 +450,7 @@ struct ContentView: View {
                     .zIndex(10)
             }
         }
+        .wrombleStopSoundOverlay()
         // Forretning/chauffoer forbliver logget ind paa tvaers af app-genstart.
         // Dashboardet praesenteres fra roden, saa det virker uanset hvordan man
         // loggede ind - og vises ikke mens biometrisk laas er aktiv.
@@ -1541,6 +1542,40 @@ func paymentLabel(_ p: Int) -> String {
     }
 }
 
+// Flydende "Stop lyd"-knap. Vises paa ENHVER skaerm saa laenge alarmen spiller,
+// saa lyden altid kan stoppes med eet tryk. Foer kunne den kun stoppes ved at
+// acceptere ordren eller forlade skaermen - derfor foeltes den uafbrydelig.
+struct StopSoundBar: View {
+    @ObservedObject private var alarm = WrombleAlarm.shared
+
+    var body: some View {
+        if alarm.isPlaying {
+            VStack(spacing: 0) {
+                Button(action: {
+                    WrombleAlarm.shared.stop()
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                }) {
+                    HStack(spacing: 9) {
+                        Image(systemName: "bell.slash.fill").font(.system(size: 16, weight: .bold))
+                        Text("Stop lyd").font(.system(size: 16, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 24).padding(.vertical, 13)
+                    .background(Capsule().fill(wrombleRed))
+                    .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
+                }
+                .padding(.top, 6)
+                Spacer()
+            }
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+}
+
+extension View {
+    func wrombleStopSoundOverlay() -> some View { overlay(StopSoundBar()) }
+}
+
 struct StaffDashboardView: View {
     let session: StaffSession
     @EnvironmentObject var appState: AppState
@@ -1571,6 +1606,7 @@ struct StaffDashboardView: View {
                 }
             }
         }
+        .wrombleStopSoundOverlay()
         .onAppear { ensurePushForSession() }
     }
 
@@ -1607,11 +1643,22 @@ struct StaffToast: View {
 // Hoej, tydelig "ny ordre"-alarm. Bruger AVAudioSession .playback, saa den spiller
 // kraftigt - ogsaa selvom telefonen staar paa lydloes - naar app'en er aaben.
 // Lyden genereres i hukommelsen (ingen lydfil skal bundles i projektet).
-final class WrombleAlarm {
+final class WrombleAlarm: ObservableObject {
     static let shared = WrombleAlarm()
     private var player: AVAudioPlayer?
     private var stopWork: DispatchWorkItem?
     private var builtMelody = -1
+    // Spiller alarmen lige nu? Bruges af "Stop lyd"-knappen, saa den kan vises
+    // paa ENHVER skaerm mens lyden koerer - foer kunne lyden kun stoppes ved at
+    // acceptere ordren eller forlade skaermen.
+    @Published private(set) var isPlaying = false
+
+    // Lyd helt slaaet fra i menuen. Gemmes som "..._off", fordi UserDefaults.bool
+    // som standard er false - saa lyden er TIL indtil man selv slaar den fra.
+    static var soundOff: Bool {
+        get { UserDefaults.standard.bool(forKey: "wr_sound_off") }
+        set { UserDefaults.standard.set(newValue, forKey: "wr_sound_off") }
+    }
 
     // Melodi-valg gemmes lokalt paa enheden (samme noegle for forretning og chauffoer).
     static var melody: Int {
@@ -1667,6 +1714,8 @@ final class WrombleAlarm {
     }
 
     func start(seconds: Double = 5) {
+        // Lyd slaaet fra i menuen -> ingen alarm overhovedet.
+        guard !WrombleAlarm.soundOff else { return }
         let m = WrombleAlarm.melody
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, options: [.duckOthers])
@@ -1681,6 +1730,7 @@ final class WrombleAlarm {
             p.volume = 1.0
             p.prepareToPlay()
             p.play()
+            isPlaying = true
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
             stopWork?.cancel()
             let w = DispatchWorkItem { [weak self] in self?.stop() }
@@ -1694,6 +1744,8 @@ final class WrombleAlarm {
     func stop() {
         stopWork?.cancel(); stopWork = nil
         player?.stop(); player?.currentTime = 0
+        chimePlayer?.stop(); chimePlayer = nil
+        isPlaying = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -1702,12 +1754,18 @@ final class WrombleAlarm {
         stop()                     // stop enhver igangvaerende lyd/preview foerst -> ingen overlappende lyde
         WrombleAlarm.melody = melody
         player = nil               // tving genopbygning med den nye melodi
+        // Forhaandsvisning skal kunne hoeres selvom lyden er slaaet fra - ellers
+        // kan man ikke vaelge melodi. Derfor midlertidigt forbi soundOff-spaerren.
+        let wasOff = WrombleAlarm.soundOff
+        WrombleAlarm.soundOff = false
         start(seconds: 2)
+        WrombleAlarm.soundOff = wasOff
     }
 
     // EN-gangs behagelig lyd (ikke loop) - bruges til kunden ved statusskift paa ordren.
     private var chimePlayer: AVAudioPlayer?
     func chime() {
+        guard !WrombleAlarm.soundOff else { return }
         do {
             try AVAudioSession.sharedInstance().setCategory(.ambient, options: [.mixWithOthers])
             try AVAudioSession.sharedInstance().setActive(true)
@@ -1728,6 +1786,7 @@ struct AlarmSettingsSheet: View {
     let showDuration: Bool
     var riderId: Int = 0   // >0 = chauffoer: vis felt til eget mobilnummer
     @AppStorage("wr_alarm_melody") private var melody = 0
+    @AppStorage("wr_sound_off") private var soundOff = false
     @Environment(\.dismiss) private var dismiss
     @State private var phone = ""
     @State private var phoneSaved = false
@@ -1747,10 +1806,19 @@ struct AlarmSettingsSheet: View {
                 }
                 if showDuration {
                     Section(header: Text("Varighed"),
-                            footer: Text(seconds == 0 ? "Der afspilles ingen lyd ved nye leverancer." : "Alarmen spiller i \(seconds) sekunder.")) {
+                            footer: Text(seconds == 0 ? "Lyden er slaaet fra. Du faar stadig beskeden - den kommer bare lydloest." : "Alarmen spiller i \(seconds) sekunder. Tryk Stop lyd for at afbryde den.")) {
                         Picker("Varighed", selection: $seconds) {
                             Text("Fra").tag(0); Text("5s").tag(5); Text("10s").tag(10); Text("15s").tag(15)
                         }.pickerStyle(.segmented)
+                        // "Fra" skal ogsaa gøre selve push-beskeden lydloes. Den afspilles
+                        // af systemet, saa serveren skal have besked - ellers larmede den
+                        // videre selvom lyden var slaaet fra her.
+                        .onChange(of: seconds) { newVal in
+                            soundOff = (newVal == 0)
+                            WrombleAlarm.soundOff = soundOff
+                            if soundOff { WrombleAlarm.shared.stop() }
+                            wrombleSyncPushPrefs()
+                        }
                     }
                 }
                 Section(header: Text("Melodi"), footer: Text("Tryk for at høre og vælge en melodi.")) {
@@ -2660,10 +2728,16 @@ struct CompanyDashboardView: View {
                 .tint(wrombleRed)
                 .disabled(busyLoading)
             }
-            Section(header: Text("Lyd ved ny ordre"), footer: Text(alarmSeconds == 0 ? "Der afspilles ingen lyd ved nye ordrer." : "Alarmen spiller i \(alarmSeconds) sekunder ved en ny ordre og stopper med det samme, naar du accepterer.")) {
+            Section(header: Text("Lyd ved ny ordre"), footer: Text(alarmSeconds == 0 ? "Lyden er slaaet fra. Du faar stadig beskeden - den kommer bare lydloest, ogsaa naar app'en er lukket." : "Alarmen spiller i \(alarmSeconds) sekunder ved en ny ordre og stopper med det samme, naar du accepterer - eller naar du trykker Stop lyd.")) {
                 Picker("Alarm-varighed", selection: Binding(
                     get: { alarmSeconds },
-                    set: { newVal in alarmSeconds = newVal; setAlarm(newVal) }
+                    // "Fra" skal ogsaa stoppe lyden PAA SELVE PUSH-BESKEDEN. Den afspilles
+                    // af systemet, saa serveren skal vide det - derfor setAlarm() nedenfor.
+                    set: { newVal in
+                        alarmSeconds = newVal
+                        setAlarm(newVal)
+                        if newVal == 0 { WrombleAlarm.shared.stop() }
+                    }
                 )) {
                     Text("Fra").tag(0)
                     Text("5s").tag(5)
@@ -8456,6 +8530,8 @@ struct ProfileView: View {
     @State private var showJobs = false
     @State private var showProfileEdit = false
     @State private var showSound = false
+    // Lyd helt fra (gemt paa enheden + sendt til serveren, saa push ogsaa bliver stille)
+    @AppStorage("wr_sound_off") private var soundOff = false
     @State private var loggedInUser: UserProfile?
 
     // Laeser version + build direkte fra bundlen, saa den altid matcher TestFlight
@@ -8505,7 +8581,10 @@ struct ProfileView: View {
                 }
             }
 
-            Section(header: Text("Notifikationer")) {
+            Section(header: Text("Notifikationer"),
+                    footer: Text(soundOff
+                                 ? "Lyden er slaaet helt fra - hverken app'en eller push-beskeder giver lyd."
+                                 : "Slaar du lyden fra, sendes push-beskeder ogsaa lydloest.")) {
                 Toggle(isOn: $appState.notificationsEnabled) {
                     Label("Push-notifikationer", systemImage: "bell.badge.fill")
                 }
@@ -8517,11 +8596,29 @@ struct ProfileView: View {
                                 if granted { UIApplication.shared.registerForRemoteNotifications() }
                                 else { appState.notificationsEnabled = false }
                                 appState.save()
+                                wrombleSyncPushPrefs()
                             }
                         }
-                    } else { appState.save() }
+                    } else {
+                        appState.save()
+                        WrombleAlarm.shared.stop()   // stop en lyd der spiller lige nu
+                        wrombleSyncPushPrefs()       // serveren skal holde op med at sende
+                    }
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }
+
+                // Selvstaendig lyd-kontakt: notifikationerne maa gerne komme,
+                // de skal bare vaere stille.
+                Toggle(isOn: Binding(get: { !soundOff }, set: { on in
+                    soundOff = !on
+                    WrombleAlarm.soundOff = !on
+                    if !on { WrombleAlarm.shared.stop() }
+                    wrombleSyncPushPrefs()
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                })) {
+                    Label("Lyd", systemImage: soundOff ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                }
+                .tint(wrombleRed)
 
                 Button(action: { showSound = true }) {
                     Label("Lyd ved ordre-opdatering", systemImage: "music.note").foregroundColor(.primary)

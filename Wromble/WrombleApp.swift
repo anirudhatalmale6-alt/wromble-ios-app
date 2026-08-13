@@ -55,6 +55,28 @@ func wrombleSyncPushToken() {
     URLSession.shared.dataTask(with: request).resume()
 }
 
+// Sender enhedens lyd-/notifikationsvalg til serveren.
+//
+// VIGTIGT: selve push-lyden afspilles af iOS, ikke af app'en - app'en kan derfor IKKE
+// daempe en push der allerede er sendt. Derfor skal serveren vide besked: er lyden
+// slaaet fra, sendes push'en uden lyd; er notifikationer slaaet fra, sendes den slet ikke.
+// Uden det her blev lyden ved med at komme selvom man slog notifikationer fra i menuen.
+func wrombleSyncPushPrefs() {
+    let token = AppState.shared.deviceToken
+    guard !token.isEmpty else { return }
+    guard let url = URL(string: "\(baseURL)/api/app-push-prefs.php") else { return }
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    let body: [String: Any] = [
+        "token": token,
+        "notifications_enabled": AppState.shared.notificationsEnabled ? 1 : 0,
+        "sound_enabled": UserDefaults.standard.bool(forKey: "wr_sound_off") ? 0 : 1,
+    ]
+    request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+    URLSession.shared.dataTask(with: request).resume()
+}
+
 // Sikrer at vi faar (eller genhenter) et APNs-token, saa wrombleSyncPushToken kan koere.
 func wrombleEnsurePushRegistered() {
     UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
@@ -81,6 +103,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         let token = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
         AppState.shared.deviceToken = token
         wrombleSyncPushToken()
+        wrombleSyncPushPrefs()   // enhedens lyd-valg skal ogsaa foelge med
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
