@@ -1430,6 +1430,14 @@ func wrombleShopOpenState(_ days: [CompanyHourDay], shopStatus: String = "") -> 
     let today = days.first { $0.weekday == names[todayIdx] }
     let manualClosed = (shopStatus == "Lukket")
 
+    // Kender vi slet ingen aabningstider - fx fordi kaldet fejlede eller svaret
+    // ikke naaede frem - saa maa vi IKKE paastaa at forretningen har lukket.
+    // Det var praecis det der skete: hentningen af tider blev afvist, listen var
+    // tom, og appen skrev "Lukket" paa forretninger der havde aabent.
+    if days.isEmpty {
+        return ShopOpenState(isOpen: !manualClosed, nextOpenText: nil, manuallyClosed: manualClosed, nextOpenAt: nil)
+    }
+
     var open = false
     if !manualClosed, let t = today, !t.store_open.isEmpty, !t.store_close.isEmpty {
         // Haandter lukketid efter midnat. Fx "aaben 11:00-00:00" eller "18:00-02:00":
