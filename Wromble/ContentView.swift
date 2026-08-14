@@ -659,12 +659,12 @@ struct BiometricLockView: View {
             Image(systemName: biometricIcon)
                 .font(.system(size: sizeClass == .regular ? 80 : 60))
                 .foregroundColor(wrombleRed)
-            Text("Wromble er laast")
+            Text("Wromble er låst")
                 .font(sizeClass == .regular ? .title.bold() : .title2.bold())
-            Text("Brug \(biometricLabel) for at laase op")
+            Text("Brug \(biometricLabel) for at låse op")
                 .foregroundColor(.secondary)
             Button(action: authenticate) {
-                Text("Laas op")
+                Text("Lås op")
                     .font(.headline)
                     .foregroundColor(.white)
                     .padding(.horizontal, 40)
@@ -718,14 +718,14 @@ struct OfflineView: View {
                 .foregroundColor(.gray)
             Text("Ingen internetforbindelse")
                 .font(sizeClass == .regular ? .title.bold() : .title2.bold())
-            Text("Tjek din forbindelse og proev igen")
+            Text("Tjek din forbindelse og prøv igen")
                 .font(sizeClass == .regular ? .title3 : .body)
                 .foregroundColor(.secondary)
             Button(action: {
                 UINotificationFeedbackGenerator().notificationOccurred(.warning)
                 onRetry()
             }) {
-                Text("Proev igen")
+                Text("Prøv igen")
                     .font(.headline)
                     .foregroundColor(.white)
                     .padding(.horizontal, sizeClass == .regular ? 60 : 40)
@@ -748,10 +748,10 @@ struct OnboardingView: View {
     @State private var currentPage = 0
 
     let pages: [(icon: String, title: String, subtitle: String)] = [
-        ("fork.knife", "Bestil mad", "Find restauranter i naerheden og faa maden leveret til doeren"),
-        ("bag.fill", "Shop lokalt", "Koeb specialvarer fra butikker i dit omraade"),
-        ("bell.badge.fill", "Hold dig opdateret", "Faa besked naar din ordre er paa vej"),
-        ("map.fill", "Find naerliggende", "Se restauranter og butikker paa kortet"),
+        ("fork.knife", "Bestil mad", "Find restauranter i nærheden og få maden leveret til døren"),
+        ("bag.fill", "Shop lokalt", "Køb specialvarer fra butikker i dit område"),
+        ("bell.badge.fill", "Hold dig opdateret", "Få besked når din ordre er på vej"),
+        ("map.fill", "Find nærliggende", "Se restauranter og butikker på kortet"),
     ]
 
     var body: some View {
@@ -792,7 +792,7 @@ struct OnboardingView: View {
                             appState.save()
                         }
                     }) {
-                        Text(currentPage == pages.count - 1 ? "Kom i gang" : "Naeste")
+                        Text(currentPage == pages.count - 1 ? "Kom i gang" : "Næste")
                             .font(.headline)
                             .foregroundColor(.white)
                             .frame(maxWidth: sizeClass == .regular ? 400 : .infinity)
@@ -849,13 +849,13 @@ enum LoginRole: String, CaseIterable {
         switch self {
         case .privat: return ""
         case .forretning: return "Log ind som forretning"
-        case .chauffor: return "Log ind som chauffoer"
+        case .chauffor: return "Log ind som chauffør"
         }
     }
     var portalInfo: String {
         switch self {
         case .privat: return ""
-        case .forretning: return "Se og haandter indkomne ordrer for din forretning. Ogsaa for medarbejdere."
+        case .forretning: return "Se og håndter indkomne ordrer for din forretning. Også for medarbejdere."
         case .chauffor: return "Se dine aktive leverancer og marker dem som leveret."
         }
     }
@@ -936,7 +936,7 @@ struct LoginView: View {
                     .frame(width: sizeClass == .regular ? 100 : 70, height: sizeClass == .regular ? 100 : 70)
                 Text(isLogin ? "Log ind" : "Opret konto")
                     .font(sizeClass == .regular ? .largeTitle.bold() : .title.bold())
-                Text(role == .privat ? (isLogin ? "Log ind med din Wromble konto" : "Opret en gratis Wromble konto") : "Vaelg hvordan du vil logge ind")
+                Text(role == .privat ? (isLogin ? "Log ind med din Wromble konto" : "Opret en gratis Wromble konto") : "Vælg hvordan du vil logge ind")
                     .font(.subheadline).foregroundColor(.secondary)
 
                 // Rolle-valg (Privat / Forretning / Medarbejder) - som paa wromble.dk
@@ -1024,9 +1024,9 @@ struct LoginView: View {
                 .disabled(isLoading)
 
                 Button(action: {
-                    onLogin(UserProfile(id: 0, name: "Gaest", email: "", phone: nil, type: "guest"))
+                    onLogin(UserProfile(id: 0, name: "Gæst", email: "", phone: nil, type: "guest"))
                 }) {
-                    Text("Fortsaet uden login").font(.subheadline).foregroundColor(.secondary)
+                    Text("Fortsæt uden login").font(.subheadline).foregroundColor(.secondary)
                 }
                 .padding(.top, 4)
 
@@ -1104,7 +1104,7 @@ struct LoginView: View {
                 isLoading = false
                 guard let data = data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    errorMessage = "Netvaerksfejl. Proev igen."; return
+                    errorMessage = "Netværksfejl. Prøv igen."; return
                 }
                 if let error = json["error"] as? String { errorMessage = error; return }
                 wrSaveAuthToken(json)
@@ -1155,7 +1155,7 @@ struct LoginView: View {
             guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
                   let tokenData = credential.identityToken,
                   let idToken = String(data: tokenData, encoding: .utf8) else {
-                errorMessage = "Kunne ikke laese Apple-login"
+                errorMessage = "Kunne ikke læse Apple-login"
                 return
             }
             let fn = credential.fullName?.givenName ?? ""
@@ -1174,7 +1174,7 @@ struct LoginView: View {
                     isLoading = false
                     guard let data = data,
                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                        errorMessage = "Netvaerksfejl. Proev igen."; return
+                        errorMessage = "Netværksfejl. Prøv igen."; return
                     }
                     if let error = json["error"] as? String { errorMessage = error; return }
                 wrSaveAuthToken(json)
@@ -1225,7 +1225,7 @@ struct LoginView: View {
                 isLoading = false
                 guard let data = data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    errorMessage = "Netvaerksfejl. Proev igen."; return
+                    errorMessage = "Netværksfejl. Prøv igen."; return
                 }
                 if let error = json["error"] as? String { errorMessage = error; return }
                 wrSaveAuthToken(json)
@@ -1265,7 +1265,7 @@ struct LoginView: View {
                 isLoading = false
                 guard let data = data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    errorMessage = "Netvaerksfejl. Proev igen."; return
+                    errorMessage = "Netværksfejl. Prøv igen."; return
                 }
                 if let error = json["error"] as? String { errorMessage = error; return }
                 wrSaveAuthToken(json)
@@ -1281,7 +1281,7 @@ struct LoginView: View {
 
     func doRegister() {
         isLoading = true; errorMessage = ""
-        guard !firstname.isEmpty else { errorMessage = "Fornavn er paakraevet"; isLoading = false; return }
+        guard !firstname.isEmpty else { errorMessage = "Fornavn er påkrævet"; isLoading = false; return }
         guard let url = URL(string: "\(baseURL)/api/register.php") else { return }
         var request = wrRequest(url)
         request.httpMethod = "POST"
@@ -1294,7 +1294,7 @@ struct LoginView: View {
                 isLoading = false
                 guard let data = data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    errorMessage = "Netvaerksfejl. Proev igen."; return
+                    errorMessage = "Netværksfejl. Prøv igen."; return
                 }
                 if let error = json["error"] as? String { errorMessage = error; return }
                 wrSaveAuthToken(json)
@@ -1804,7 +1804,7 @@ struct AlarmSettingsSheet: View {
             Form {
                 if riderId > 0 {
                     Section(header: Text("Dit mobilnummer"),
-                            footer: Text("Vises til forretningen paa ordren, saa de kan kontakte dig.")) {
+                            footer: Text("Vises til forretningen på ordren, så de kan kontakte dig.")) {
                         TextField("fx 12 34 56 78", text: $phone)
                             .keyboardType(.phonePad)
                             .onChange(of: phone) { _ in phoneSaved = false }
@@ -1814,7 +1814,7 @@ struct AlarmSettingsSheet: View {
                 }
                 if showDuration {
                     Section(header: Text("Varighed"),
-                            footer: Text(seconds == 0 ? "Lyden er slaaet fra. Du faar stadig beskeden - den kommer bare lydloest." : "Alarmen spiller i \(seconds) sekunder. Tryk Stop lyd for at afbryde den.")) {
+                            footer: Text(seconds == 0 ? "Lyden er slået fra. Du får stadig beskeden - den kommer bare lydløst." : "Alarmen spiller i \(seconds) sekunder. Tryk Stop lyd for at afbryde den.")) {
                         Picker("Varighed", selection: $seconds) {
                             Text("Fra").tag(0); Text("5s").tag(5); Text("10s").tag(10); Text("15s").tag(15)
                         }.pickerStyle(.segmented)
@@ -1925,7 +1925,7 @@ struct DriverDashboardView: View {
             .padding(16)
         }
         .task(id: tab) { if tab == 1 { await loadHistory() } }
-        .navigationTitle("Chauffoer")
+        .navigationTitle("Chauffør")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -1998,7 +1998,7 @@ struct DriverDashboardView: View {
                 if let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any], j["success"] as? Bool == true {
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     loc.startTracking(); postLocation()
-                    showToast("Du er paa vej med ordre #\(order.id)")
+                    showToast("Du er på vej med ordre #\(order.id)")
                     // (Type 3-kortet er KUN til kunden - chaufføren har ikke sit eget kort.)
                     Task { await load() }
                 } else {
@@ -2032,7 +2032,7 @@ struct DriverDashboardView: View {
                 Image(systemName: "bicycle").font(.system(size: 24, weight: .semibold)).foregroundColor(wrombleRed)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.name.isEmpty ? "Chauffoer" : session.name).font(.headline)
+                Text(session.name.isEmpty ? "Chauffør" : session.name).font(.headline)
                 Text("\(orders.count) aktive leverancer").font(.subheadline).foregroundColor(.secondary)
             }
             Spacer()
@@ -2045,7 +2045,7 @@ struct DriverDashboardView: View {
         VStack(spacing: 12) {
             Image(systemName: "checkmark.circle.fill").font(.system(size: 44)).foregroundColor(.green)
             Text("Ingen aktive leverancer").font(.headline)
-            Text("Nye leverancer dukker op her, naar en forretning accepterer en ordre.")
+            Text("Nye leverancer dukker op her, når en forretning accepterer en ordre.")
                 .font(.subheadline).foregroundColor(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).padding(.top, 50).padding(.horizontal, 20)
@@ -2238,7 +2238,7 @@ struct DriverDashboardView: View {
         VStack(spacing: 12) {
             Image(systemName: "clock.arrow.circlepath").font(.system(size: 40)).foregroundColor(.secondary)
             Text("Ingen leverede ordrer endnu").font(.headline)
-            Text("Naar du markerer en leverance som leveret, havner den her.")
+            Text("Når du markerer en leverance som leveret, havner den her.")
                 .font(.subheadline).foregroundColor(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).padding(.top, 50).padding(.horizontal, 20)
@@ -2268,7 +2268,7 @@ struct DriverDashboardView: View {
                 } else if j?["too_far"] as? Bool == true {
                     // Uden for 3 km: vis en tydelig dialog, saa chaufføeren ikke tror ordren blev leveret.
                     tooFarMessage = (j?["error"] as? String)
-                        ?? "Du skal vaere inden for 3 km af leveringsadressen for at markere ordren som leveret."
+                        ?? "Du skal være inden for 3 km af leveringsadressen for at markere ordren som leveret."
                 } else {
                     showToast((j?["error"] as? String) ?? "Kunne ikke opdatere ordren")
                 }
@@ -2329,7 +2329,7 @@ struct CompanyOrdersView: View {
         let cal = Calendar.current
         let d = Date(timeIntervalSince1970: TimeInterval(ts))
         if cal.isDateInToday(d) { return "I dag" }
-        if cal.isDateInYesterday(d) { return "I gaar" }
+        if cal.isDateInYesterday(d) { return "I går" }
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "da_DK")
         fmt.dateFormat = "d. MMMM yyyy"
@@ -2382,7 +2382,7 @@ struct CompanyOrdersView: View {
                 cancelTarget = nil
             }
         } message: {
-            Text("Kunden faar besked om at ordre #\(cancelTarget?.id ?? 0) er annulleret. Dette kan ikke fortrydes.")
+            Text("Kunden får besked om at ordre #\(cancelTarget?.id ?? 0) er annulleret. Dette kan ikke fortrydes.")
         }
     }
 
@@ -2505,15 +2505,15 @@ struct CompanyOrdersView: View {
                         .background(Color.red).cornerRadius(8)
                 }
                 if let eta = order.etaText, !eta.isEmpty {
-                    let who = (order.riderName?.isEmpty == false) ? "\(order.riderName!) er " : "Chauffoer "
-                    Label("\(who)paa vej – \(eta)", systemImage: "bicycle")
+                    let who = (order.riderName?.isEmpty == false) ? "\(order.riderName!) er " : "Chauffør "
+                    Label("\(who)på vej – \(eta)", systemImage: "bicycle")
                         .font(.caption.weight(.semibold)).foregroundColor(.blue)
                 }
                 if let rp = order.riderPhone, !rp.isEmpty {
                     Button(action: {
                         if let u = URL(string: "tel:\(rp.replacingOccurrences(of: " ", with: ""))") { UIApplication.shared.open(u) }
                     }) {
-                        Label("Chauffoer: \(rp)", systemImage: "phone.fill")
+                        Label("Chauffør: \(rp)", systemImage: "phone.fill")
                             .font(.caption.weight(.semibold)).foregroundColor(wrombleRed)
                     }
                 }
@@ -2714,7 +2714,7 @@ struct CompanyDashboardView: View {
                 }
                 .padding(.vertical, 4)
             }
-            Section(header: Text("Ordremodtagelse"), footer: Text(autoAccept ? "Alle nye ordrer bliver accepteret automatisk. Du behoever ikke trykke Accepter." : "Du godkender selv hver ordre manuelt under Ordrer.")) {
+            Section(header: Text("Ordremodtagelse"), footer: Text(autoAccept ? "Alle nye ordrer bliver accepteret automatisk. Du behøver ikke trykke Accepter." : "Du godkender selv hver ordre manuelt under Ordrer.")) {
                 Toggle(isOn: Binding(
                     get: { autoAccept },
                     set: { newVal in autoAccept = newVal; setAutoAccept(newVal) }
@@ -2725,18 +2725,18 @@ struct CompanyDashboardView: View {
                 .tint(wrombleRed)
                 .disabled(autoLoading)
             }
-            Section(header: Text("Status"), footer: Text(busy ? "Kunder kan IKKE bestille lige nu - de faar besked om at der er ekstraordinaert travlt." : "Butikken tager imod bestillinger som normalt.")) {
+            Section(header: Text("Status"), footer: Text(busy ? "Kunder kan IKKE bestille lige nu - de får besked om at der er ekstraordinært travlt." : "Butikken tager imod bestillinger som normalt.")) {
                 Toggle(isOn: Binding(
                     get: { busy },
                     set: { newVal in busy = newVal; setBusy(newVal) }
                 )) {
-                    Label("Ekstraordinaert travlt", systemImage: "flame.fill")
+                    Label("Ekstraordinært travlt", systemImage: "flame.fill")
                         .foregroundColor(busy ? wrombleRed : .primary)
                 }
                 .tint(wrombleRed)
                 .disabled(busyLoading)
             }
-            Section(header: Text("Lyd ved ny ordre"), footer: Text(alarmSeconds == 0 ? "Lyden er slaaet fra. Du faar stadig beskeden - den kommer bare lydloest, ogsaa naar app'en er lukket." : "Alarmen spiller i \(alarmSeconds) sekunder ved en ny ordre og stopper med det samme, naar du accepterer - eller naar du trykker Stop lyd.")) {
+            Section(header: Text("Lyd ved ny ordre"), footer: Text(alarmSeconds == 0 ? "Lyden er slået fra. Du får stadig beskeden - den kommer bare lydløst, også når app'en er lukket." : "Alarmen spiller i \(alarmSeconds) sekunder ved en ny ordre og stopper med det samme, når du accepterer - eller når du trykker Stop lyd.")) {
                 Picker("Alarm-varighed", selection: Binding(
                     get: { alarmSeconds },
                     // "Fra" skal ogsaa stoppe lyden PAA SELVE PUSH-BESKEDEN. Den afspilles
@@ -2779,7 +2779,7 @@ struct CompanyDashboardView: View {
                     Label("Menukort", systemImage: "list.bullet.rectangle").foregroundColor(.primary)
                 }
                 NavigationLink { CompanyHoursView(session: session) } label: {
-                    Label("Aabningstider", systemImage: "clock.fill").foregroundColor(.primary)
+                    Label("Åbningstider", systemImage: "clock.fill").foregroundColor(.primary)
                 }
                 NavigationLink { CompanyTablesView(session: session) } label: {
                     Label("Borde", systemImage: "table.furniture").foregroundColor(.primary)
@@ -2910,7 +2910,7 @@ struct StripeEarningsView: View {
             // Stripe-tilslutning + udbetaling
             Section(header: Text("Udbetaling"), footer: Text(payoutsEnabled
                 ? "Din konto er tilsluttet. Tryk Udbetal for at sende saldoen til din bank."
-                : "Tilslut din egen konto for at kunne faa drikkepengene udbetalt. Det er gratis og tager et par minutter.")) {
+                : "Tilslut din egen konto for at kunne få drikkepengene udbetalt. Det er gratis og tager et par minutter.")) {
 
                 if payoutsEnabled {
                     HStack {
@@ -2933,7 +2933,7 @@ struct StripeEarningsView: View {
                         HStack {
                             Spacer()
                             if working { ProgressView().tint(.white) }
-                            else { Label(detailsSubmitted ? "Faerdiggoer tilslutning" : "Tilslut Stripe", systemImage: "link").font(.headline) }
+                            else { Label(detailsSubmitted ? "Færdiggør tilslutning" : "Tilslut Stripe", systemImage: "link").font(.headline) }
                             Spacer()
                         }
                         .foregroundColor(.white).padding(.vertical, 6)
@@ -2963,7 +2963,7 @@ struct StripeEarningsView: View {
                 }
             } else if !loading {
                 Section {
-                    Text("Ingen drikkepenge endnu. De dukker op her, naar en kunde giver drikkepenge.")
+                    Text("Ingen drikkepenge endnu. De dukker op her, når en kunde giver drikkepenge.")
                         .font(.subheadline).foregroundColor(.secondary)
                 }
             }
@@ -3024,12 +3024,12 @@ struct StripeEarningsView: View {
             DispatchQueue.main.async {
                 working = false
                 guard let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    message = "Netvaerksfejl. Proev igen."; return
+                    message = "Netværksfejl. Prøv igen."; return
                 }
                 if let s = j["onboarding_url"] as? String, let u = URL(string: s) {
                     UIApplication.shared.open(u)
                 } else if j["connect_disabled"] as? Bool == true {
-                    message = "Stripe Connect er ikke aktiveret paa kontoen endnu."
+                    message = "Stripe Connect er ikke aktiveret på kontoen endnu."
                 } else {
                     message = (j["error"] as? String) ?? "Kunne ikke starte tilslutning."
                 }
@@ -3047,11 +3047,11 @@ struct StripeEarningsView: View {
             DispatchQueue.main.async {
                 working = false
                 guard let data = data, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    message = "Netvaerksfejl. Proev igen."; return
+                    message = "Netværksfejl. Prøv igen."; return
                 }
                 if j["success"] as? Bool == true {
                     let amt = j["amount"] as? Double ?? (j["amount"] as? NSNumber)?.doubleValue ?? 0
-                    message = String(format: "Udbetaling paa %.0f kr er sendt til din bank.", amt)
+                    message = String(format: "Udbetaling på %.0f kr er sendt til din bank.", amt)
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     Task { await loadAsync() }
                 } else {
@@ -3089,7 +3089,7 @@ struct CompanyMenuView: View {
                     ProgressView().scaleEffect(1.2).frame(maxWidth: .infinity).padding(.top, 50)
                 } else {
                     if categories.isEmpty {
-                        Text("Ingen kategorier endnu. Opret din foerste kategori nedenfor.")
+                        Text("Ingen kategorier endnu. Opret din første kategori nedenfor.")
                             .font(.subheadline).foregroundColor(.secondary)
                             .frame(maxWidth: .infinity, alignment: .center).padding(.top, 30)
                     }
@@ -3170,7 +3170,7 @@ struct CompanyMenuView: View {
             Button(action: {
                 editing = MenuItemEdit(id: "new-\(cat.id)", itemId: 0, catId: cat.id, headline: "", description: "", price: "")
             }) {
-                Label("Tilfoej ret", systemImage: "plus.circle.fill")
+                Label("Tilføj ret", systemImage: "plus.circle.fill")
                     .font(.subheadline.weight(.semibold)).foregroundColor(wrombleRed)
             }
             .padding(.top, 2)
@@ -3245,12 +3245,12 @@ struct MenuItemEditorView: View {
                         Text("kr").foregroundColor(.secondary)
                     }
                 }
-                Section(header: Text("Aldersgraense"),
-                        footer: Text("Vaelg en aldersgraense for alkohol, tobak mv. Billedet sloeres for kunden, indtil kunden bekraefter sin alder.")) {
-                    Picker("Aldersgraense", selection: $ageLimit) {
+                Section(header: Text("Aldersgrænse"),
+                        footer: Text("Vælg en aldersgrænse for alkohol, tobak mv. Billedet sløres for kunden, indtil kunden bekræfter sin alder.")) {
+                    Picker("Aldersgrænse", selection: $ageLimit) {
                         Text("Ingen").tag(0)
-                        Text("16 aar").tag(16)
-                        Text("18 aar").tag(18)
+                        Text("16 år").tag(16)
+                        Text("18 år").tag(18)
                     }
                     .pickerStyle(.segmented)
                 }
@@ -3288,7 +3288,7 @@ struct MenuItemEditorView: View {
         if edit.itemId > 0 { payload["id"] = edit.itemId }
         postJSON("app-menu-item.php", payload) { ok, err in
             isSaving = false
-            if ok { onDone(edit.itemId > 0 ? "Ret opdateret" : "Ret tilfoejet") } else { errorMessage = err ?? "Kunne ikke gemme" }
+            if ok { onDone(edit.itemId > 0 ? "Ret opdateret" : "Ret tilføjet") } else { errorMessage = err ?? "Kunne ikke gemme" }
         }
     }
 
@@ -3314,18 +3314,18 @@ struct CompanyHoursView: View {
                 HStack { Spacer(); ProgressView(); Spacer() }
             } else {
                 Section {
-                    Text("Lad felterne staa tomme paa de dage I holder lukket. Format: 10:00")
+                    Text("Lad felterne stå tomme på de dage I holder lukket. Format: 10:00")
                         .font(.caption).foregroundColor(.secondary)
                 }
                 ForEach($days) { $day in
                     Section(header: Text(day.weekday)) {
-                        timeRow(label: "Aabent", open: $day.store_open, close: $day.store_close)
+                        timeRow(label: "Åbent", open: $day.store_open, close: $day.store_close)
                         timeRow(label: "Levering", open: $day.bring_open, close: $day.bring_close)
                     }
                 }
             }
         }
-        .navigationTitle("Aabningstider")
+        .navigationTitle("Åbningstider")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .toolbar {
@@ -3391,8 +3391,8 @@ struct OrderModeSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 22)
             Text(isOpenNow
-                 ? "Vaelg hvordan du vil have din bestilling."
-                 : "Du kan stadig forudbestille." + (reopenText.map { " Aabner \($0)." } ?? ""))
+                 ? "Vælg hvordan du vil have din bestilling."
+                 : "Du kan stadig forudbestille." + (reopenText.map { " Åbner \($0)." } ?? ""))
                 .font(.subheadline).foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 5)
@@ -3531,7 +3531,7 @@ struct TableBookingView: View {
                 // i stedet for en tom skaerm.
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Du er ikke logget ind").font(.subheadline.weight(.bold))
-                    Text("Du skal vaere logget ind som kunde for at reservere et bord. Reservationen bliver gemt paa din konto, saa forretningen ved hvem der kommer.")
+                    Text("Du skal være logget ind som kunde for at reservere et bord. Reservationen bliver gemt på din konto, så forretningen ved hvem der kommer.")
                         .font(.footnote).foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Button(action: { showLogin = true }) {
@@ -3546,14 +3546,14 @@ struct TableBookingView: View {
                 // - ikke "ingen borde", som er en anden fejl.
                 VStack(alignment: .leading, spacing: 12) {
                     Text(e).font(.subheadline).foregroundColor(.secondary)
-                    Button("Proev igen") { Task { await load() } }
+                    Button("Prøv igen") { Task { await load() } }
                         .font(.subheadline.weight(.bold)).foregroundColor(wrombleRed)
                 }.padding(.horizontal, 20).padding(.top, 30)
             } else if tables.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("\(companyName.isEmpty ? "Forretningen" : companyName) har ikke oprettet nogen borde endnu.")
                         .font(.subheadline.weight(.semibold))
-                    Text("Bordbestilling virker foerst, naar forretningen selv har oprettet sine borde. Det goer den under Administrer \u{2192} Borde i firma-login.")
+                    Text("Bordbestilling virker først, når forretningen selv har oprettet sine borde. Det gør den under Administrer \u{2192} Borde i firma-login.")
                         .font(.footnote).foregroundColor(.secondary)
                     Button("Bestil til afhentning i stedet") {
                         CartManager.shared.orderMode = "pickup"
@@ -3563,7 +3563,7 @@ struct TableBookingView: View {
                     .font(.subheadline.weight(.bold)).foregroundColor(wrombleRed).padding(.top, 4)
                 }.padding(.horizontal, 20).padding(.top, 26)
             } else {
-                Text("Vaelg bord").font(.headline).padding(.horizontal, 20).padding(.bottom, 6)
+                Text("Vælg bord").font(.headline).padding(.horizontal, 20).padding(.bottom, 6)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(tables) { t in
@@ -3580,11 +3580,11 @@ struct TableBookingView: View {
                     }.padding(.horizontal, 16)
                 }
 
-                Text("Vaelg tid").font(.headline).padding(.horizontal, 20).padding(.top, 14)
+                Text("Vælg tid").font(.headline).padding(.horizontal, 20).padding(.top, 14)
 
                 if let t = selectedTable {
                     if t.free_slots.isEmpty {
-                        Text("Ingen ledige tider paa bord \(t.table_number) denne dag. Proev en anden dag eller et andet bord.")
+                        Text("Ingen ledige tider på bord \(t.table_number) denne dag. Prøv en anden dag eller et andet bord.")
                             .font(.subheadline).foregroundColor(.secondary).padding(.horizontal, 20).padding(.top, 6)
                     } else {
                         List(t.free_slots, id: \.self) { slot in
@@ -3599,7 +3599,7 @@ struct TableBookingView: View {
                         .listStyle(.plain)
                     }
                 } else {
-                    Text("Vaelg et bord foerst").font(.subheadline).foregroundColor(.secondary)
+                    Text("Vælg et bord først").font(.subheadline).foregroundColor(.secondary)
                         .padding(.horizontal, 20).padding(.top, 6)
                 }
             }
@@ -3808,7 +3808,7 @@ struct CompanyTablesView: View {
             }
         } message: {
             Text((deleteTarget?.bookings ?? 0) > 0
-                 ? "Bordet har \(deleteTarget?.bookings ?? 0) reservationer. De slettes ogsaa. Handlingen kan ikke fortrydes."
+                 ? "Bordet har \(deleteTarget?.bookings ?? 0) reservationer. De slettes også. Handlingen kan ikke fortrydes."
                  : "Handlingen kan ikke fortrydes.")
         }
         .alert("Slet reservation?",
@@ -3821,7 +3821,7 @@ struct CompanyTablesView: View {
             }
         } message: {
             Text("Bord \(cancelTarget?.table_number ?? 0) · \(cancelTarget?.date ?? "") \(cancelTarget?.time ?? "")\n"
-                 + ((cancelTarget?.order_id ?? 0) > 0 ? "Bestillingen paa bordet fjernes ogsaa. " : "")
+                 + ((cancelTarget?.order_id ?? 0) > 0 ? "Bestillingen på bordet fjernes også. " : "")
                  + "Handlingen kan ikke fortrydes.")
         }
         .overlay(alignment: .bottom) { if let t = toast { StaffToast(text: t) } }
@@ -3834,7 +3834,7 @@ struct CompanyTablesView: View {
             } else if tables.isEmpty {
                 VStack(spacing: 8) {
                     Text("Ingen borde endnu").font(.headline)
-                    Text("Opret dine borde her, saa gaesterne kan reservere dem.")
+                    Text("Opret dine borde her, så gæsterne kan reservere dem.")
                         .font(.caption).foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                 }
@@ -3870,8 +3870,8 @@ struct CompanyTablesView: View {
                 VStack(spacing: 8) {
                     Text("Ingen kommende reservationer").font(.headline)
                     Text(tables.isEmpty
-                         ? "Opret foerst et bord under fanen Borde."
-                         : "Reservationer fra app'en og wromble.dk vises her. Du kan ogsaa booke et bord selv.")
+                         ? "Opret først et bord under fanen Borde."
+                         : "Reservationer fra app'en og wromble.dk vises her. Du kan også booke et bord selv.")
                         .font(.caption).foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                 }
@@ -3995,7 +3995,7 @@ struct CompanyBookingEditor: View {
                     if isLoadingSlots {
                         HStack { Spacer(); ProgressView(); Spacer() }
                     } else if slots.isEmpty {
-                        Text("Ingen ledige tider paa bordet den dag.")
+                        Text("Ingen ledige tider på bordet den dag.")
                             .font(.caption).foregroundColor(.secondary)
                     } else {
                         ForEach(slots, id: \.self) { s in
@@ -4149,7 +4149,7 @@ struct CompanyProfileView: View {
             } else {
                 Section(header: Text("Status")) {
                     Toggle(isOn: $isOpen) {
-                        Label(isOpen ? "Aaben for bestillinger" : "Lukket", systemImage: isOpen ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        Label(isOpen ? "Åben for bestillinger" : "Lukket", systemImage: isOpen ? "checkmark.circle.fill" : "xmark.circle.fill")
                     }.tint(.green)
                 }
                 Section(header: Text("Firma")) {
@@ -4181,7 +4181,7 @@ struct CompanyProfileView: View {
                 }
                 Section {
                     Button(action: save) {
-                        HStack { Spacer(); if isSaving { ProgressView() } else { Text("Gem aendringer").font(.headline) }; Spacer() }
+                        HStack { Spacer(); if isSaving { ProgressView() } else { Text("Gem ændringer").font(.headline) }; Spacer() }
                     }
                     .disabled(isSaving)
                     .listRowBackground(wrombleRed)
@@ -4286,7 +4286,7 @@ func postJSONRaw(_ path: String, _ payload: [String: Any],
         DispatchQueue.main.async {
             guard let data = data,
                   let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                completion(false, "Netvaerksfejl. Proev igen.", nil); return
+                completion(false, "Netværksfejl. Prøv igen.", nil); return
             }
             if let err = j["error"] as? String { completion(false, err, j); return }
             completion(j["success"] as? Bool == true, nil, j)
@@ -4303,7 +4303,7 @@ func postJSON(_ path: String, _ payload: [String: Any], completion: @escaping (B
         DispatchQueue.main.async {
             guard let data = data,
                   let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                completion(false, "Netvaerksfejl. Proev igen."); return
+                completion(false, "Netværksfejl. Prøv igen."); return
             }
             if let err = j["error"] as? String { completion(false, err); return }
             completion(j["success"] as? Bool == true, nil)
@@ -4388,14 +4388,14 @@ struct PartnerFormView: View {
         NavigationStack {
             if sent {
                 FormSuccessView(title: "Tak for din interesse!",
-                                message: "Vi har modtaget din ansoegning og kontakter dig snarest for at komme i gang.",
+                                message: "Vi har modtaget din ansøgning og kontakter dig snarest for at komme i gang.",
                                 onClose: { dismiss() })
             } else {
                 Form {
                     Section {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Bliv partner hos Wromble").font(.headline)
-                            Text("Faa din restaurant eller butik paa Wromble og naa flere kunder.")
+                            Text("Få din restaurant eller butik på Wromble og nå flere kunder.")
                                 .font(.subheadline).foregroundColor(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -4411,7 +4411,7 @@ struct PartnerFormView: View {
                         TextField("Telefon", text: $phone).keyboardType(.phonePad)
                     }
                     Section(header: Text("Besked (valgfrit)")) {
-                        TextField("Fortael os om din forretning...", text: $message, axis: .vertical).lineLimit(3...6)
+                        TextField("Fortæl os om din forretning...", text: $message, axis: .vertical).lineLimit(3...6)
                     }
                     if !errorMessage.isEmpty {
                         Text(errorMessage).foregroundColor(.red).font(.subheadline)
@@ -4420,7 +4420,7 @@ struct PartnerFormView: View {
                         Button(action: submit) {
                             HStack {
                                 Spacer()
-                                if isLoading { ProgressView() } else { Text("Send ansoegning").font(.headline) }
+                                if isLoading { ProgressView() } else { Text("Send ansøgning").font(.headline) }
                                 Spacer()
                             }
                         }
@@ -4469,7 +4469,7 @@ struct JobsView: View {
                     VStack(spacing: 12) {
                         Image(systemName: "briefcase").font(.system(size: 44)).foregroundColor(.secondary)
                         Text("Ingen ledige stillinger").font(.headline)
-                        Text("Der er ingen aabne jobopslag lige nu. Kig forbi igen senere.")
+                        Text("Der er ingen åbne jobopslag lige nu. Kig forbi igen senere.")
                             .font(.subheadline).foregroundColor(.secondary).multilineTextAlignment(.center)
                             .padding(.horizontal, 30)
                     }
@@ -4525,8 +4525,8 @@ struct JobApplyView: View {
 
     var body: some View {
         if sent {
-            FormSuccessView(title: "Ansoegning sendt!",
-                            message: "Tak fordi du soegte stillingen som \(job.title). Vi kigger den igennem og vender tilbage.",
+            FormSuccessView(title: "Ansøgning sendt!",
+                            message: "Tak fordi du søgte stillingen som \(job.title). Vi kigger den igennem og vender tilbage.",
                             onClose: { dismiss() })
         } else {
             Form {
@@ -4544,7 +4544,7 @@ struct JobApplyView: View {
                     }
                     .padding(.vertical, 4)
                 }
-                Section(header: Text("Din ansoegning")) {
+                Section(header: Text("Din ansøgning")) {
                     TextField("Navn", text: $name).textContentType(.name)
                     TextField("Email", text: $email).keyboardType(.emailAddress).autocapitalization(.none).textContentType(.emailAddress)
                     TextField("Telefon", text: $phone).keyboardType(.phonePad)
@@ -4557,7 +4557,7 @@ struct JobApplyView: View {
                     Button(action: submit) {
                         HStack {
                             Spacer()
-                            if isLoading { ProgressView() } else { Text("Send ansoegning").font(.headline) }
+                            if isLoading { ProgressView() } else { Text("Send ansøgning").font(.headline) }
                             Spacer()
                         }
                     }
@@ -4566,7 +4566,7 @@ struct JobApplyView: View {
                     .foregroundColor(.white)
                 }
             }
-            .navigationTitle("Soeg stilling")
+            .navigationTitle("Søg stilling")
             .navigationBarTitleDisplayMode(.inline)
         }
     }
@@ -4861,7 +4861,7 @@ struct ChangeEmailView: View {
 
     var body: some View {
         Form {
-            Section(header: Text("Nuvaerende email")) {
+            Section(header: Text("Nuværende email")) {
                 Text(currentEmail.isEmpty ? "—" : currentEmail).foregroundColor(.secondary)
             }
             Section(header: Text("Ny email")) {
@@ -4869,8 +4869,8 @@ struct ChangeEmailView: View {
                     .keyboardType(.emailAddress).autocapitalization(.none)
                     .textContentType(.emailAddress).disableAutocorrection(true)
             }
-            Section(header: Text("Bekraeft"), footer: Text("Indtast din nuvaerende adgangskode for at bekraefte aendringen.")) {
-                SecureField("Nuvaerende adgangskode", text: $currentPassword)
+            Section(header: Text("Bekræft"), footer: Text("Indtast din nuværende adgangskode for at bekræfte ændringen.")) {
+                SecureField("Nuværende adgangskode", text: $currentPassword)
             }
             if let e = errorMsg {
                 Section { Text(e).foregroundColor(.red).font(.subheadline) }
@@ -4893,7 +4893,7 @@ struct ChangeEmailView: View {
         postJSON("change-email.php", ["current_password": currentPassword, "new_email": newEmail.trimmingCharacters(in: .whitespaces)]) { ok, err in
             isSaving = false
             if ok { onChanged(newEmail.trimmingCharacters(in: .whitespaces)); dismiss() }
-            else { errorMsg = err ?? "Kunne ikke aendre email" }
+            else { errorMsg = err ?? "Kunne ikke ændre email" }
         }
     }
 }
@@ -4914,8 +4914,8 @@ struct ChangePasswordView: View {
 
     var body: some View {
         Form {
-            Section(header: Text("Nuvaerende adgangskode")) {
-                SecureField("Nuvaerende adgangskode", text: $currentPassword)
+            Section(header: Text("Nuværende adgangskode")) {
+                SecureField("Nuværende adgangskode", text: $currentPassword)
             }
             Section(header: Text("Ny adgangskode"), footer: Text("Mindst 6 tegn.")) {
                 SecureField("Ny adgangskode", text: $newPassword)
@@ -4968,7 +4968,7 @@ struct HomeView: View {
     @State private var scannedTable: Int?
     @State private var scanError: String?
     @State private var scanTitle = "Scan bordets QR-kode"
-    @State private var scanSubtitle = "Hold kameraet over QR-koden paa bordet"
+    @State private var scanSubtitle = "Hold kameraet over QR-koden på bordet"
 
     var selectedCat: ProductCat? { productCats.first(where: { $0.key == selectedCatKey }) }
 
@@ -5042,7 +5042,7 @@ struct HomeView: View {
                             if locationManager.location != nil {
                                 HStack(spacing: 4) {
                                     Image(systemName: "location.fill").font(.caption).foregroundColor(wrombleRed)
-                                    Text("Naerliggende steder").font(.subheadline).foregroundColor(.secondary)
+                                    Text("Nærliggende steder").font(.subheadline).foregroundColor(.secondary)
                                 }
                             } else {
                                 Text("Hvad har du lyst til i dag?").font(.subheadline).foregroundColor(.secondary)
@@ -5068,7 +5068,7 @@ struct HomeView: View {
                     // Search
                     HStack(spacing: 10) {
                         Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-                        TextField("Soeg restauranter, butikker...", text: $searchText)
+                        TextField("Søg restauranter, butikker...", text: $searchText)
                             .font(sizeClass == .regular ? .body : .subheadline)
                     }
                     .padding(sizeClass == .regular ? 14 : 12)
@@ -5180,7 +5180,7 @@ struct HomeView: View {
                             VStack(spacing: 12) {
                                 Image(systemName: "magnifyingglass").font(.system(size: 40)).foregroundColor(.secondary)
                                 Text("Ingen produkter").font(.headline)
-                                Text("Proev en anden kategori").font(.subheadline).foregroundColor(.secondary)
+                                Text("Prøv en anden kategori").font(.subheadline).foregroundColor(.secondary)
                             }
                             .frame(maxWidth: .infinity).padding(.top, 40)
                         } else {
@@ -5202,7 +5202,7 @@ struct HomeView: View {
                         VStack(spacing: 12) {
                             Image(systemName: "magnifyingglass").font(.system(size: 40)).foregroundColor(.secondary)
                             Text("Ingen resultater").font(.headline)
-                            Text("Proev et andet soegeord").font(.subheadline).foregroundColor(.secondary)
+                            Text("Prøv et andet søgeord").font(.subheadline).foregroundColor(.secondary)
                         }
                         .frame(maxWidth: .infinity).padding(.top, 60)
                     } else {
@@ -5285,10 +5285,10 @@ struct HomeView: View {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         if store {
             scanTitle = "Scan i butikken"
-            scanSubtitle = "Scan butikkens QR-kode og spring koeen over"
+            scanSubtitle = "Scan butikkens QR-kode og spring køen over"
         } else {
             scanTitle = "Scan bordets QR-kode"
-            scanSubtitle = "Hold kameraet over QR-koden paa bordet"
+            scanSubtitle = "Hold kameraet over QR-koden på bordet"
         }
         showScanner = true
     }
@@ -5296,7 +5296,7 @@ struct HomeView: View {
     func handleScan(_ code: String) {
         showScanner = false
         guard let comps = URLComponents(string: code) else {
-            scanError = "QR-koden kunne ikke genkendes. Proev igen."
+            scanError = "QR-koden kunne ikke genkendes. Prøv igen."
             return
         }
         let host = comps.host ?? ""
@@ -5338,7 +5338,7 @@ struct HomeView: View {
                 scannedRestaurant = match
             }
         } else {
-            scanError = "Vi kunne ikke finde stedet i appen. Tjek at butikken er aktiv paa Wromble."
+            scanError = "Vi kunne ikke finde stedet i appen. Tjek at butikken er aktiv på Wromble."
         }
     }
 
@@ -5706,7 +5706,7 @@ struct ScanBordBanner: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Scan bordets QR-kode")
                         .font(.headline).foregroundColor(.primary)
-                    Text("Saet dig ved bordet, scan koden og bestil med det samme")
+                    Text("Sæt dig ved bordet, scan koden og bestil med det samme")
                         .font(.caption).foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -5714,7 +5714,7 @@ struct ScanBordBanner: View {
             }
 
             HStack(spacing: 8) {
-                scanStep(number: "1", icon: "person.fill", text: "Saet dig")
+                scanStep(number: "1", icon: "person.fill", text: "Sæt dig")
                 stepArrow
                 scanStep(number: "2", icon: "qrcode.viewfinder", text: "Scan QR")
                 stepArrow
@@ -5767,7 +5767,7 @@ struct StoreScanBanner: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Scan i butikken")
                     .font(.headline).foregroundColor(.primary)
-                Text("Scan butikkens QR-kode, bestil i appen og spring koeen over")
+                Text("Scan butikkens QR-kode, bestil i appen og spring køen over")
                     .font(.caption).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -6307,8 +6307,8 @@ struct RestaurantDetailView: View {
     var openState: ShopOpenState { wrombleShopOpenState(hoursDays, shopStatus: shopStatus) }
     var isOpenNow: Bool { openState.isOpen }
     var closedMessage: String {
-        if openState.manuallyClosed { return "Butikken er lukket lige nu. Du kan bestille, naar den aabner igen." }
-        if let n = openState.nextOpenText { return "Butikken er lukket lige nu – aabner \(n)." }
+        if openState.manuallyClosed { return "Butikken er lukket lige nu. Du kan bestille, når den åbner igen." }
+        if let n = openState.nextOpenText { return "Butikken er lukket lige nu – åbner \(n)." }
         return "Butikken er lukket lige nu."
     }
 
@@ -6352,7 +6352,7 @@ struct RestaurantDetailView: View {
                             Image(systemName: "map").foregroundColor(wrombleRed)
                         }
                     }
-                    ShareLink(item: "\(restaurant.name) paa Wromble: \(baseURL)/\(restaurant.alias)/") {
+                    ShareLink(item: "\(restaurant.name) på Wromble: \(baseURL)/\(restaurant.alias)/") {
                         Image(systemName: "square.and.arrow.up")
                     }
                 }
@@ -6368,7 +6368,7 @@ struct RestaurantDetailView: View {
             }
             Button("Annuller", role: .cancel) { pendingItem = nil }
         } message: {
-            Text("Du har varer fra \(cart.restaurantName) i kurven. Vil du rydde den og tilfoeje fra \(restaurant.name)?")
+            Text("Du har varer fra \(cart.restaurantName) i kurven. Vil du rydde den og tilføje fra \(restaurant.name)?")
         }
         // Eget ark i stedet for Apples confirmationDialog - den kunne ikke styles,
         // brak overskriften midt i en saetning og laa midt paa skaermen.
@@ -6419,7 +6419,7 @@ struct RestaurantDetailView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 8) {
                             Circle().fill(isOpenNow ? Color.green : wrombleRed).frame(width: 9, height: 9)
-                            Text(isOpenNow ? "Aabent nu" : "Lukket")
+                            Text(isOpenNow ? "Åbent nu" : "Lukket")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundColor(isOpenNow ? .green : wrombleRed)
                             if isOpenNow, let h = todayHours, !h.store_open.isEmpty, !h.store_close.isEmpty {
@@ -6641,7 +6641,7 @@ struct MenuItemRow: View {
                     if item.ageLimit > 0 { ageBadge(item.ageLimit) }
                 }
                 if isLocked {
-                    Text("Aldersgraense \(item.ageLimit) aar - bekraeft din alder")
+                    Text("Aldersgrænse \(item.ageLimit) år - bekræft din alder")
                         .font(.caption).foregroundColor(.secondary).lineLimit(2)
                 } else if let desc = item.description, !desc.isEmpty {
                     Text(desc).font(.caption).foregroundColor(.secondary).lineLimit(2)
@@ -6702,14 +6702,14 @@ struct MenuItemRow: View {
         .padding(12)
         .background(Color(.secondarySystemBackground))
         .cornerRadius(12)
-        .confirmationDialog("Aldersbekraeftelse",
+        .confirmationDialog("Aldersbekræftelse",
                             isPresented: $showAgeGate, titleVisibility: .visible) {
-            Button("Ja, jeg er fyldt \(item.ageLimit) aar") {
+            Button("Ja, jeg er fyldt \(item.ageLimit) år") {
                 if item.ageLimit > confirmedAge { confirmedAge = item.ageLimit }
             }
             Button("Nej", role: .cancel) {}
         } message: {
-            Text("Denne vare har en aldersgraense paa \(item.ageLimit) aar. Bekraeft at du er fyldt \(item.ageLimit) aar for at se og bestille varen.")
+            Text("Denne vare har en aldersgrænse på \(item.ageLimit) år. Bekræft at du er fyldt \(item.ageLimit) år for at se og bestille varen.")
         }
     }
 }
@@ -6767,7 +6767,7 @@ struct CartView: View {
         if cal.isDateInToday(e) { f.dateFormat = "'i dag kl.' HH:mm" }
         else if cal.isDateInTomorrow(e) { f.dateFormat = "'i morgen kl.' HH:mm" }
         else { f.dateFormat = "EEEE 'd.' d/M 'kl.' HH:mm" }
-        return "\(cart.restaurantName) aabner \(f.string(from: e)) – det er den tidligste tid du kan vaelge."
+        return "\(cart.restaurantName) åbner \(f.string(from: e)) – det er den tidligste tid du kan vælge."
     }
     // Holder den valgte tid inden for aabningstiden. Vaelger kunden et tidspunkt hvor
     // butikken har lukket, rykkes det frem til foerste aabne tid.
@@ -6786,8 +6786,8 @@ struct CartView: View {
     // eller naar det er en FORUDBESTILLING til et senere tidspunkt.
     var canOrderNow: Bool { cartOpenState.isOpen || hoursDays.isEmpty || cart.preorder }
     var cartClosedMessage: String {
-        if cartOpenState.manuallyClosed { return "\(cart.restaurantName) er lukket lige nu. Du kan bestille, naar butikken aabner igen." }
-        if let n = cartOpenState.nextOpenText { return "\(cart.restaurantName) er lukket lige nu – aabner \(n)." }
+        if cartOpenState.manuallyClosed { return "\(cart.restaurantName) er lukket lige nu. Du kan bestille, når butikken åbner igen." }
+        if let n = cartOpenState.nextOpenText { return "\(cart.restaurantName) er lukket lige nu – åbner \(n)." }
         return "\(cart.restaurantName) er lukket lige nu."
     }
 
@@ -6808,7 +6808,7 @@ struct CartView: View {
             Spacer()
             Image(systemName: "cart").font(.system(size: 60)).foregroundColor(.secondary)
             Text("Din kurv er tom").font(.title2.bold())
-            Text("Tilfoej varer fra en restaurant").foregroundColor(.secondary)
+            Text("Tilføj varer fra en restaurant").foregroundColor(.secondary)
             Button("Luk") { dismiss() }.font(.headline).foregroundColor(wrombleRed)
             Spacer()
         }
@@ -6901,15 +6901,15 @@ struct CartView: View {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "clock.badge.checkmark").foregroundColor(wrombleRed)
                         Text(isTableOrder
-                             ? "Maden er klar naar du saetter dig ved bordet."
-                             : "Butikken er lukket nu. Din bestilling sendes ind til det tidspunkt du vaelger.")
+                             ? "Maden er klar når du sætter dig ved bordet."
+                             : "Butikken er lukket nu. Din bestilling sendes ind til det tidspunkt du vælger.")
                             .font(.subheadline).foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
                 Picker("", selection: $scheduleLater) {
                     Text("Hurtigst muligt (ca. 1 time)").tag(false)
-                    Text("Vaelg tid").tag(true)
+                    Text("Vælg tid").tag(true)
                 }
                 .pickerStyle(.segmented)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
@@ -6970,7 +6970,7 @@ struct CartView: View {
             // Drikkepenge til chaufføeren - kun relevant ved levering
             if isDelivery {
                 Section(header: Text("Drikkepenge til chaufføeren"),
-                        footer: Text("Frivilligt. Betales separat med kort, og hele beloebet gaar til chaufføeren.")) {
+                        footer: Text("Frivilligt. Betales separat med kort, og hele beløbet går til chaufføeren.")) {
                     HStack(spacing: 8) {
                         ForEach([0, 10, 20, 30], id: \.self) { amt in
                             Button(action: {
@@ -6990,7 +6990,7 @@ struct CartView: View {
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     HStack(spacing: 8) {
                         Image(systemName: "square.and.pencil").foregroundColor(wrombleRed)
-                        TextField("Andet beloeb (kr)", text: $customTip)
+                        TextField("Andet beløb (kr)", text: $customTip)
                             .keyboardType(.decimalPad)
                             .onChange(of: customTip) { newVal in
                                 let cleaned = newVal.replacingOccurrences(of: ",", with: ".")
@@ -7102,12 +7102,12 @@ struct CartView: View {
     var confirmationText: String {
         if orderAutoAccepted {
             return orderIsTable
-                ? "Din bordbestilling er bekraeftet af restauranten. Bordet er reserveret til dig."
-                : "Din ordre er bekraeftet af restauranten og goeres klar nu."
+                ? "Din bordbestilling er bekræftet af restauranten. Bordet er reserveret til dig."
+                : "Din ordre er bekræftet af restauranten og gøres klar nu."
         }
         return orderIsTable
-            ? "Din bordbestilling er sendt til restauranten og afventer deres bekraeftelse. Du faar besked, saa snart den er accepteret."
-            : "Din ordre er sendt til restauranten og afventer nu deres bekraeftelse. Du faar besked, saa snart den er accepteret."
+            ? "Din bordbestilling er sendt til restauranten og afventer deres bekræftelse. Du får besked, så snart den er accepteret."
+            : "Din ordre er sendt til restauranten og afventer nu deres bekræftelse. Du får besked, så snart den er accepteret."
     }
 
     var orderConfirmation: some View {
@@ -7145,12 +7145,12 @@ struct CartView: View {
                 VStack(spacing: 10) {
                     HStack(spacing: 8) {
                         Image(systemName: "creditcard.fill").foregroundColor(wrombleRed)
-                        Text(String(format: "Beloeb: %.2f kr", cart.total)).font(.subheadline.weight(.semibold))
+                        Text(String(format: "Beløb: %.2f kr", cart.total)).font(.subheadline.weight(.semibold))
                     }
                     Button(action: { startOrderCheckout(orderId: orderId) }) {
                         HStack {
                             Image(systemName: orderCheckoutOpened ? "arrow.up.right.square" : "creditcard.fill")
-                            Text(orderCheckoutOpened ? "Betaling aabnet i Safari" : "Betal nu").font(.headline)
+                            Text(orderCheckoutOpened ? "Betaling åbnet i Safari" : "Betal nu").font(.headline)
                         }
                         .foregroundColor(.white)
                         .frame(maxWidth: sizeClass == .regular ? 300 : .infinity)
@@ -7175,7 +7175,7 @@ struct CartView: View {
                     Button(action: { startTipCheckout(orderId: orderId) }) {
                         HStack {
                             Image(systemName: tipCheckoutOpened ? "arrow.up.right.square" : "creditcard.fill")
-                            Text(tipCheckoutOpened ? "Betaling aabnet i Safari" : "Betal drikkepenge nu").font(.headline)
+                            Text(tipCheckoutOpened ? "Betaling åbnet i Safari" : "Betal drikkepenge nu").font(.headline)
                         }
                         .foregroundColor(.white)
                         .frame(maxWidth: sizeClass == .regular ? 300 : .infinity)
@@ -7203,7 +7203,7 @@ struct CartView: View {
                     cart.clear()
                     dismiss()
                 }) {
-                    Text("Faerdig")
+                    Text("Færdig")
                         .font(.headline).foregroundColor(.secondary)
                         .frame(maxWidth: sizeClass == .regular ? 300 : .infinity)
                         .padding(.vertical, 14)
@@ -7212,7 +7212,7 @@ struct CartView: View {
             .padding(.horizontal, 30)
             Spacer()
         }
-        .navigationTitle("Bekraeftelse")
+        .navigationTitle("Bekræftelse")
     }
 
     func loadUser() {
@@ -7327,7 +7327,7 @@ struct CartView: View {
                 isOrdering = false
                 guard let data = data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    errorMessage = "Netvaerksfejl. Proev igen."
+                    errorMessage = "Netværksfejl. Prøv igen."
                     return
                 }
                 if let error = json["error"] as? String {
@@ -7366,7 +7366,7 @@ struct CartView: View {
             DispatchQueue.main.async {
                 guard let data = data,
                       let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    paymentInfo = "Kunne ikke aabne betaling. Proev igen."
+                    paymentInfo = "Kunne ikke åbne betaling. Prøv igen."
                     return
                 }
                 if let s = j["checkout_url"] as? String, let u = URL(string: s) {
@@ -7377,7 +7377,7 @@ struct CartView: View {
                 } else if let e = j["error"] as? String {
                     paymentInfo = e
                 } else {
-                    paymentInfo = "Kunne ikke aabne betaling. Proev igen."
+                    paymentInfo = "Kunne ikke åbne betaling. Prøv igen."
                 }
             }
         }.resume()
@@ -7487,7 +7487,7 @@ struct OrdersView: View {
                     Spacer()
                     Image(systemName: "bag").font(.system(size: 50)).foregroundColor(.secondary)
                     Text("Ingen ordrer endnu").font(.title3.bold())
-                    Text("Dine ordrer vises her naar du bestiller").font(.subheadline).foregroundColor(.secondary)
+                    Text("Dine ordrer vises her når du bestiller").font(.subheadline).foregroundColor(.secondary)
                     Spacer()
                 }
             } else {
@@ -8591,8 +8591,8 @@ struct ProfileView: View {
 
             Section(header: Text("Notifikationer"),
                     footer: Text(soundOff
-                                 ? "Lyden er slaaet helt fra - hverken app'en eller push-beskeder giver lyd."
-                                 : "Slaar du lyden fra, sendes push-beskeder ogsaa lydloest.")) {
+                                 ? "Lyden er slået helt fra - hverken app'en eller push-beskeder giver lyd."
+                                 : "Slår du lyden fra, sendes push-beskeder også lydløst.")) {
                 Toggle(isOn: $appState.notificationsEnabled) {
                     Label("Push-notifikationer", systemImage: "bell.badge.fill")
                 }
@@ -8720,7 +8720,7 @@ struct ProfileView: View {
                 }
 
                 Link(destination: URL(string: "\(baseURL)/terms/app.php") ?? URL(string: baseURL)!) {
-                    Label("Vilkaar og betingelser", systemImage: "doc.text.fill").foregroundColor(.primary)
+                    Label("Vilkår og betingelser", systemImage: "doc.text.fill").foregroundColor(.primary)
                 }
             }
 
@@ -8731,7 +8731,7 @@ struct ProfileView: View {
                     Text(appVersionString).foregroundColor(.secondary)
                 }
                 HStack {
-                    Label("Netvaerk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
+                    Label("Netværk", systemImage: appState.networkAvailable ? "wifi" : "wifi.slash")
                     Spacer()
                     Text(appState.networkAvailable ? "Forbundet" : "Ikke forbundet")
                         .foregroundColor(appState.networkAvailable ? .green : .red).font(.subheadline)
@@ -8776,7 +8776,7 @@ struct ProfileView: View {
         .navigationTitle("Profil")
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(items: [
-                "Proev Wromble - bestil mad og specialvarer fra lokale butikker! Download her: https://apps.apple.com/dk/app/wromble/id6778496033"
+                "Prøv Wromble - bestil mad og specialvarer fra lokale butikker! Download her: https://apps.apple.com/dk/app/wromble/id6778496033"
             ])
         }
         .sheet(isPresented: $showSupportChat) {
@@ -8825,7 +8825,7 @@ struct ProfileView: View {
         .alert("Biometrisk login", isPresented: $showBiometricAlert) {
             Button("OK") { appState.biometricEnabled = false; appState.save() }
         } message: {
-            Text("Biometrisk login er ikke tilgaengelig paa denne enhed.")
+            Text("Biometrisk login er ikke tilgængelig på denne enhed.")
         }
         .onAppear {
             if let savedId = UserDefaults.standard.value(forKey: "loggedInUserId") as? Int, savedId > 0 {
@@ -8903,7 +8903,7 @@ struct AccountDeletionView: View {
                         }
                         .padding(.horizontal, 30)
 
-                        SecureField("Indtast adgangskode for at bekraefte", text: $password)
+                        SecureField("Indtast adgangskode for at bekræfte", text: $password)
                             .textFieldStyle(.roundedBorder)
                             .padding(.horizontal, 30)
                     }
@@ -8963,7 +8963,7 @@ struct AccountDeletionView: View {
                 isDeleting = false
                 guard let data = data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    errorMessage = "Netvaerksfejl. Proev igen."
+                    errorMessage = "Netværksfejl. Prøv igen."
                     return
                 }
                 if let error = json["error"] as? String { errorMessage = error; return }

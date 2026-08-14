@@ -6,7 +6,7 @@ import ActivityKit
 let wrombleRed = Color(red: 226/255, green: 15/255, blue: 30/255)
 let wrombleGreen = Color(red: 34/255, green: 197/255, blue: 94/255)
 
-private let stageSteps = ["Modtaget", "Bekraeftet", "Paa vej", "Leveret"]
+private let stageSteps = ["Modtaget", "Bekræftet", "På vej", "Leveret"]
 
 // Fremdrift 0...1 ud fra stadie (0 modtaget -> 1 leveret).
 private func stageProgress(_ stage: Int) -> Double {
@@ -114,9 +114,9 @@ struct WrombleLiveActivityLockScreen: View {
         }
         if s.stage >= 3 { return "Din ordre er leveret. Velbekomme!" }
         if s.stage == 2 {
-            return s.etaText.isEmpty ? "Din ordre er paa vej til dig." : "Paa vej – \(s.etaText)"
+            return s.etaText.isEmpty ? "Din ordre er på vej til dig." : "På vej – \(s.etaText)"
         }
-        if s.stage == 1 { return "Restauranten er gaaet i gang med din ordre." }
+        if s.stage == 1 { return "Restauranten er gået i gang med din ordre." }
         return "Din ordre er modtaget."
     }
 }

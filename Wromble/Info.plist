@@ -19,7 +19,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.1.1</string>
 	<key>CFBundleVersion</key>
-	<string>76</string>
+	<string>77</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
@@ -52,13 +52,13 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>Wromble bruger kameraet til at scanne QR-koder paa bordet, tage billeder i kundeservice-chatten og til videoopkald med supporten</string>
+	<string>Wromble bruger kameraet til at scanne QR-koder på bordet, tage billeder i kundeservice-chatten og til videoopkald med supporten</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Wromble bruger dit fotobibliotek, saa du kan sende billeder i kundeservice-chatten</string>
+	<string>Wromble bruger dit fotobibliotek, så du kan sende billeder i kundeservice-chatten</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Wromble bruger mikrofonen til tale under videoopkald</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Wromble bruger din placering til at vise restauranter og butikker i naerheden, og for chauffoerer til at vise leveringens status og estimeret ankomsttid til kunden</string>
+	<string>Wromble bruger din placering til at vise restauranter og butikker i nærheden, og for chauffører til at vise leveringens status og estimeret ankomsttid til kunden</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Wromble bruger Face ID til sikker login</string>
 	<key>LSApplicationQueriesSchemes</key>
