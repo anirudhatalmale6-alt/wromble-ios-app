@@ -6343,6 +6343,8 @@ struct RestaurantDetailView: View {
     @State private var isLoading = true
     @State private var showCart = false
     @State private var showClearCartAlert = false
+    // "Tøm kurv" fra menuen - kunden vil starte forfra med en ny bestilling
+    @State private var showClearCart = false
     @State private var pendingItem: MenuItem?
     @State private var hoursDays: [CompanyHourDay] = []
     @State private var shopStatus: String = ""
@@ -6376,19 +6378,36 @@ struct RestaurantDetailView: View {
             menuContent
 
             if cart.itemCount > 0 && cart.restaurantId == restaurant.id {
-                Button(action: {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    showCart = true
-                }) {
-                    HStack {
-                        Image(systemName: "cart.fill")
-                        Text("Se kurv (\(cart.itemCount))").font(.headline)
-                        Spacer()
-                        Text(String(format: "%.2f kr", cart.total)).font(.headline)
+                HStack(spacing: 10) {
+                    // Toem kurven uden at gaa ind i den foerst - kunden staar
+                    // typisk her i menuen naar han vil starte forfra.
+                    Button(action: {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        showClearCart = true
+                    }) {
+                        Image(systemName: "trash")
+                            .font(.headline).foregroundColor(wrombleRed)
+                            .padding(.horizontal, 16).padding(.vertical, 14)
+                            .background(Color(.systemBackground))
+                            .overlay(RoundedRectangle(cornerRadius: 14)
+                                .stroke(wrombleRed, lineWidth: 1.5))
+                            .cornerRadius(14)
                     }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 20).padding(.vertical, 14)
-                    .background(wrombleRed).cornerRadius(14)
+
+                    Button(action: {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        showCart = true
+                    }) {
+                        HStack {
+                            Image(systemName: "cart.fill")
+                            Text("Se kurv (\(cart.itemCount))").font(.headline)
+                            Spacer()
+                            Text(String(format: "%.2f kr", cart.total)).font(.headline)
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 20).padding(.vertical, 14)
+                        .background(wrombleRed).cornerRadius(14)
+                    }
                 }
                 .padding(.horizontal, 16).padding(.bottom, 8)
                 .shadow(color: .black.opacity(0.2), radius: 8, y: -2)
@@ -6428,6 +6447,21 @@ struct RestaurantDetailView: View {
             Button("Annuller", role: .cancel) { pendingItem = nil }
         } message: {
             Text("Du har varer fra \(cart.restaurantName) i kurven. Vil du rydde den og tilføje fra \(restaurant.name)?")
+        }
+        // Toem kurven helt og start forfra
+        .confirmationDialog("Tøm kurven?", isPresented: $showClearCart, titleVisibility: .visible) {
+            Button("Tøm kurven", role: .destructive) {
+                let resId = cart.tableReservationId
+                if resId > 0 {
+                    postJSONRaw("app-table-booking.php", ["action": "cancel", "id": resId]) { _, _, _ in }
+                }
+                cart.clear()
+            }
+            Button("Fortryd", role: .cancel) {}
+        } message: {
+            Text(cart.tableReservationId > 0
+                 ? "Alle varer fjernes, og du starter forfra med en ny bestilling. Din bordreservation bliver samtidig annulleret, så bordet ikke står optaget hos restauranten."
+                 : "Alle varer fjernes, og du starter forfra med en ny bestilling.")
         }
         // Eget ark i stedet for Apples confirmationDialog - den kunne ikke styles,
         // brak overskriften midt i en saetning og laa midt paa skaermen.
@@ -6796,6 +6830,8 @@ struct CartView: View {
     @State private var showLoginSheet = false
     @State private var loggedInUser: UserProfile?
     @State private var errorMessage = ""
+    // "Tøm kurv": kunden vil starte forfra med en ny bestilling
+    @State private var showClearCart = false
     // Levering/afhentning + betaling (samme flow som wromble.dk)
     @State private var isDelivery = false            // false = Afhentning, true = Levering
     // Bordbestilling: maden serveres ved bordet - hverken levering eller afhentning
@@ -6864,6 +6900,18 @@ struct CartView: View {
                 cartContent
             }
         }
+    }
+
+    // Toemmer kurven helt. Har kunden reserveret et bord til bestillingen, bliver
+    // reservationen ogsaa annulleret - ellers stod bordet optaget hos forretningen
+    // til en bestilling der aldrig kom.
+    func clearCart() {
+        let resId = cart.tableReservationId
+        if resId > 0 {
+            postJSONRaw("app-table-booking.php", ["action": "cancel", "id": resId]) { _, _, _ in }
+        }
+        cart.clear()
+        dismiss()
     }
 
     var emptyCart: some View {
@@ -7108,17 +7156,45 @@ struct CartView: View {
                 .listRowBackground(canOrderNow ? wrombleRed : Color.gray)
                 .disabled(isOrdering || !canOrderNow)
             }
+
+            // Start forfra: én knap i stedet for at fjerne hver vare for sig
+            Section {
+                Button {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    showClearCart = true
+                } label: {
+                    HStack {
+                        Spacer()
+                        Image(systemName: "trash")
+                        Text("Tøm kurven og start forfra").font(.subheadline.weight(.semibold))
+                        Spacer()
+                    }.foregroundColor(.red)
+                }
+                .disabled(isOrdering)
+            }
         }
         .navigationTitle("Din kurv")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Luk") { dismiss() } }
             ToolbarItem(placement: .destructiveAction) {
-                Button("Ryd") {
+                Button {
                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    cart.clear()
+                    showClearCart = true
+                } label: {
+                    Label("Tøm kurv", systemImage: "trash")
                 }.foregroundColor(.red)
             }
+        }
+        // Toemning skal bekraeftes - der er ingen fortryd, og knappen sad foer
+        // lige ved siden af "Luk".
+        .confirmationDialog("Tøm kurven?", isPresented: $showClearCart, titleVisibility: .visible) {
+            Button("Tøm kurven", role: .destructive) { clearCart() }
+            Button("Fortryd", role: .cancel) {}
+        } message: {
+            Text(cart.tableReservationId > 0
+                 ? "Alle varer fjernes, og du starter forfra med en ny bestilling. Din bordreservation bliver samtidig annulleret, så bordet ikke står optaget hos restauranten."
+                 : "Alle varer fjernes, og du starter forfra med en ny bestilling.")
         }
         .sheet(isPresented: $showLoginSheet) {
             NavigationStack {
