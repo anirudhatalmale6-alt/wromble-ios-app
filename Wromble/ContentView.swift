@@ -2594,8 +2594,25 @@ struct CompanyOrdersView: View {
                 VStack(spacing: 8) {
                     HStack(spacing: 6) {
                         Image(systemName: order.delivered ? "checkmark.circle.fill" : "checkmark.seal.fill").foregroundColor(.green)
-                        Text(order.delivered ? "Leveret" : "Accepteret").font(.subheadline.weight(.semibold)).foregroundColor(.green)
+                        // En afhentning bliver afhentet - ikke leveret.
+                        Text(order.delivered ? ((order.delivery || order.table) ? "Leveret" : "Afhentet") : "Accepteret")
+                            .font(.subheadline.weight(.semibold)).foregroundColor(.green)
                         Spacer()
+                    }
+                    // Afhentning: der er ingen chauffoer til at lukke ordren, saa
+                    // forretningen skal selv kunne kvittere for at kunden hentede den.
+                    // Ellers ville en hentet ordre blive lukket automatisk som
+                    // "ikke afhentet" 1 time efter afhentningstidspunktet.
+                    if !order.delivered && !order.delivery && !order.table {
+                        Button(action: { act(order, "collected") }) {
+                            Group {
+                                if actionId == order.id { ProgressView().tint(.white) }
+                                else { Label("Kunden har hentet ordren", systemImage: "bag.badge.checkmark").font(.subheadline.weight(.bold)) }
+                            }
+                            .frame(maxWidth: .infinity).padding(.vertical, 11)
+                            .foregroundColor(.white).background(Color.green).cornerRadius(10)
+                        }
+                        .disabled(actionId != nil)
                     }
                     // Accepteret ordre der er i gang: forretningen kan annullere den.
                     if !order.delivered {
@@ -2697,7 +2714,11 @@ struct CompanyOrdersView: View {
                         showToast("Ordre #\(order.id) afvist")
                     } else {
                         Task { await load() }
-                        showToast("Ordre #\(order.id) accepteret")
+                        switch action {
+                        case "collected": showToast("Ordre #\(order.id) afhentet")
+                        case "cancel":    showToast("Ordre #\(order.id) annulleret")
+                        default:          showToast("Ordre #\(order.id) accepteret")
+                        }
                     }
                 } else {
                     showToast("Handlingen mislykkedes")
