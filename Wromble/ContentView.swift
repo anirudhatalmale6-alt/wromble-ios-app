@@ -2413,19 +2413,39 @@ struct CompanyOrdersView: View {
         WrombleAlarm.shared.start(seconds: Double(alarmSeconds))
     }
 
-    // Notifikation + besked til forretningen naar en leverance er forsinket.
-    func alertOverdue(_ ids: [Int]) {
+    // Notifikation + besked til forretningen naar en ordre er forsinket.
+    // Levering og afhentning er ikke det samme: en afhentning bliver ikke "leveret",
+    // den bliver AFHENTET - og saa skal der staa "ikke afhentet".
+    func alertOverdue(_ late: [CompanyOrder]) {
+        guard !late.isEmpty else { return }
+        let ids  = late.map { $0.id }.sorted()
         let list = ids.map { "#\($0)" }.joined(separator: ", ")
+        // Er hver eneste forsinkede ordre en afhentning, skriver vi afhentnings-teksten.
+        // Er de blandede, holder vi os til en neutral formulering.
+        let allPickup   = late.allSatisfy { !$0.delivery && !$0.table }
+        let allDelivery = late.allSatisfy { $0.delivery }
+        let what: String
+        if allPickup      { what = "ikke afhentet" }
+        else if allDelivery { what = "ikke leveret" }
+        else              { what = "ikke afsluttet" }
+
         let content = UNMutableNotificationContent()
-        content.title = "Ordre forsinket"
+        content.title = allPickup ? "Ordre ikke afhentet" : "Ordre forsinket"
         content.body  = ids.count == 1
-            ? "Ordre \(list) er ikke leveret til den aftalte tid."
-            : "Ordrerne \(list) er ikke leveret til den aftalte tid."
+            ? "Ordre \(list) er \(what) til den aftalte tid."
+            : "Ordrerne \(list) er \(what) til den aftalte tid."
         content.sound = .default
         let req = UNNotificationRequest(identifier: "overdue-\(list)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req)
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
-        showToast("Forsinket: ordre \(list) er ikke leveret til tiden")
+        showToast("Forsinket: ordre \(list) er \(what) til tiden")
+    }
+
+    // Teksten paa det roede FORSINKET-maerke paa ordrekortet.
+    func wrombleOverdueLabel(_ order: CompanyOrder) -> String {
+        if order.table    { return "FORSINKET – ikke serveret til tiden" }
+        if order.delivery { return "FORSINKET – ikke leveret til tiden" }
+        return "FORSINKET – ikke afhentet til tiden"
     }
 
     func sectionHeader(_ title: String, count: Int) -> some View {
@@ -2499,7 +2519,10 @@ struct CompanyOrdersView: View {
                 Label(wantedTimeLabel(order), systemImage: order.delivery ? "bicycle" : "bag")
                     .font(.caption.weight(.semibold)).foregroundColor(wrombleRed)
                 if order.overdue == true {
-                    Label("FORSINKET – ikke leveret til tiden", systemImage: "exclamationmark.triangle.fill")
+                    // En afhentning bliver ikke leveret - den bliver afhentet. Teksten skal
+                    // passe til ordretypen, ellers staar der "ikke leveret til tiden" paa en
+                    // ordre kunden selv skulle komme og hente.
+                    Label(wrombleOverdueLabel(order), systemImage: "exclamationmark.triangle.fill")
                         .font(.caption.weight(.bold)).foregroundColor(.white)
                         .padding(.horizontal, 8).padding(.vertical, 4)
                         .background(Color.red).cornerRadius(8)
@@ -2562,7 +2585,9 @@ struct CompanyOrdersView: View {
             } else if order.status == "mislykket_levering" {
                 HStack(spacing: 6) {
                     Image(systemName: "xmark.octagon.fill").foregroundColor(wrombleRed)
-                    Text("Ikke leveret").font(.subheadline.weight(.semibold)).foregroundColor(wrombleRed)
+                    // Afhentning der aldrig blev hentet = "Ikke afhentet", ikke "Ikke leveret".
+                    Text((order.delivery || order.table) ? "Ikke leveret" : "Ikke afhentet")
+                        .font(.subheadline.weight(.semibold)).foregroundColor(wrombleRed)
                 }
                 .padding(.top, 2)
             } else {
@@ -2637,10 +2662,12 @@ struct CompanyOrdersView: View {
                     if didInitialLoad && !fresh.isEmpty { alertNewOrder() }
                     knownOrderIds = incomingNew
 
-                    // Opdag forsinkede leverancer (aftalt tid passeret, ikke leveret)
+                    // Opdag forsinkede ordrer (aftalt tid passeret, ikke leveret/afhentet)
                     let incomingOverdue = Set(r.orders.filter { $0.overdue == true }.map { $0.id })
                     let freshOverdue = incomingOverdue.subtracting(knownOverdueIds)
-                    if didInitialLoad && !freshOverdue.isEmpty { alertOverdue(Array(freshOverdue).sorted()) }
+                    if didInitialLoad && !freshOverdue.isEmpty {
+                        alertOverdue(r.orders.filter { freshOverdue.contains($0.id) })
+                    }
                     knownOverdueIds = incomingOverdue
                 }
                 orders = r.orders
