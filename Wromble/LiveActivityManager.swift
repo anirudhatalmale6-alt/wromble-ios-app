@@ -11,10 +11,10 @@ enum WrombleLiveActivityManager {
     // Ordrer vi allerede lytter paa push-token for (undgaar dublerede observatoerer).
     private static var observing = Set<Int>()
 
-    static func sync(orderId: Int, companyName: String, stage: Int, statusLabel: String, etaText: String) {
+    static func sync(orderId: Int, companyName: String, stage: Int, statusLabel: String, etaText: String, mode: String = "delivery") {
         guard orderId > 0 else { return }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        let state = WrombleDeliveryAttributes.ContentState(stage: stage, statusLabel: statusLabel, etaText: etaText)
+        let state = WrombleDeliveryAttributes.ContentState(stage: stage, statusLabel: statusLabel, etaText: etaText, mode: mode)
 
         if let act = Activity<WrombleDeliveryAttributes>.activities.first(where: { $0.attributes.orderId == orderId }) {
             observePushToken(act, orderId: orderId)   // gen-registrer token efter app-genstart

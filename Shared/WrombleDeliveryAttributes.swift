@@ -10,6 +10,9 @@ struct WrombleDeliveryAttributes: ActivityAttributes {
         var stage: Int          // 0 = modtaget, 1 = bekraeftet, 2 = paa vej, 3 = leveret
         var statusLabel: String // fx "Paa vej", "Leveret"
         var etaText: String     // fx "ca. 8 min." (tom hvis ukendt)
+        // Ordretype: "delivery" / "pickup" / "table". Valgfri, saa en opdatering fra
+        // en aeldre server (uden feltet) stadig kan afkodes. nil = levering.
+        var mode: String? = nil
     }
     var orderId: Int
     var companyName: String

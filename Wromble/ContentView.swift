@@ -227,6 +227,8 @@ struct Order: Identifiable {
     let total: Double
     let status: String
     let items: [OrderItem]
+    // "delivery" / "pickup" / "table" - afgoer om der staar Leveret, Afhentet eller Serveret.
+    var mode: String = "delivery"
 }
 
 struct OrderItem {
@@ -317,6 +319,10 @@ struct OrderStatus {
     var tablePersons: Int = 0
     var tableTime: String = ""
     var tableDate: String = ""
+    // Ordretypen og de trin der hoerer til den. Kommer fra serveren, saa app'en ikke
+    // selv skal gaette: "delivery" (4 trin) / "pickup" og "table" (3 trin).
+    var mode: String = "delivery"
+    var steps: [String] = []
 }
 
 // MARK: - Favorites Manager
@@ -7545,7 +7551,7 @@ struct OrdersView: View {
                             HStack {
                                 Text(order.companyName).font(.headline)
                                 Spacer()
-                                orderStatusBadge(order.status)
+                                orderStatusBadge(order.status, order.mode)
                             }
                             if !order.date.isEmpty {
                                 Text(order.date).font(.caption).foregroundColor(.secondary)
@@ -7572,10 +7578,14 @@ struct OrdersView: View {
         }
     }
 
-    func orderStatusBadge(_ status: String) -> some View {
+    func orderStatusBadge(_ status: String, _ mode: String = "delivery") -> some View {
         let (label, color): (String, Color) = {
             switch status.lowercased() {
-            case "completed", "delivered": return ("Leveret", .green)
+            // En afhentning bliver AFHENTET - ikke leveret.
+            case "completed", "delivered":
+                if mode == "pickup" { return ("Afhentet", .green) }
+                if mode == "table"  { return ("Serveret", .green) }
+                return ("Leveret", .green)
             case "processing", "preparing": return ("Tilberedes", .orange)
             // Chauffoeren har trykket "Start levering" og er paa vej med ordren
             case "on_the_way", "delivering": return ("Under levering", .blue)
@@ -7611,7 +7621,8 @@ struct OrdersView: View {
                                  date: o["date"] as? String ?? "",
                                  total: o["total"] as? Double ?? 0,
                                  status: o["status"] as? String ?? "pending",
-                                 items: items)
+                                 items: items,
+                                 mode: o["mode"] as? String ?? "delivery")
                 }
             }
         }.resume()
@@ -7726,7 +7737,13 @@ struct OrderTrackingView: View {
         span: MKCoordinateSpan(latitudeDelta: 0.04, longitudeDelta: 0.04))
     @State private var didCenterMap = false
 
-    let steps = ["Modtaget", "Bekræftet", "På vej", "Leveret"]
+    // Trin-raekken kommer fra SERVEREN og passer til ordretypen: levering har 4 trin
+    // (chaufføeren er et af dem), afhentning og bordbestilling har 3 - der er ingen
+    // der koerer nogen steder hen.
+    var steps: [String] {
+        if let s = status?.steps, !s.isEmpty { return s }
+        return ["Modtaget", "Bekræftet", "På vej", "Leveret"]
+    }
 
     var mapPins: [TrackPin] {
         var pins: [TrackPin] = []
@@ -7741,11 +7758,18 @@ struct OrderTrackingView: View {
         return pins
     }
 
-    var stage: Int { status?.stage ?? 0 }
-    var isRejected: Bool { stage < 0 }
+    // Serveren taeller altid 0..3. Ved 3-trins-visning findes "På vej" ikke, saa alt
+    // under slut-trinnet samles paa trin 1.
+    var rawStage: Int { status?.stage ?? 0 }
+    var stage: Int {
+        if steps.count >= 4 { return max(0, min(3, rawStage)) }
+        if rawStage >= 3 { return steps.count - 1 }
+        return max(0, min(steps.count - 2, rawStage))
+    }
+    var isRejected: Bool { rawStage < 0 }
     var progress: Double {
         if isRejected { return 0 }
-        return Double(max(0, stage)) / Double(steps.count - 1)
+        return Double(max(0, stage)) / Double(max(1, steps.count - 1))
     }
 
     var body: some View {
@@ -7841,7 +7865,7 @@ struct OrderTrackingView: View {
                             }
                         } else if !s.isTable {
                             // Bordbestilling har ingen rute - maden bliver staaende i huset.
-                            DeliveryRouteView(stage: stage,
+                            DeliveryRouteView(stage: max(0, rawStage),
                                               isDelivery: s.isDelivery,
                                               companyName: s.companyName.isEmpty ? initialCompany : s.companyName)
                         }
@@ -7877,8 +7901,11 @@ struct OrderTrackingView: View {
 
     var ringIcon: String {
         if isRejected { return "xmark.circle.fill" }
-        switch stage {
-        case 3: return "checkmark.seal.fill"
+        // Afhentning har hverken cykelbud eller hus - den ender i en pose over disken.
+        let pickup = (status?.mode ?? "delivery") == "pickup"
+        let table  = (status?.mode ?? "delivery") == "table"
+        switch rawStage {
+        case 3: return pickup ? "bag.fill" : (table ? "fork.knife.circle.fill" : "checkmark.seal.fill")
         case 2: return "bicycle"
         case 1: return "fork.knife"
         default: return "clock.badge.checkmark"
@@ -8059,7 +8086,9 @@ struct OrderTrackingView: View {
                 tableNumber: json["table_number"] as? Int ?? 0,
                 tablePersons: json["table_persons"] as? Int ?? 0,
                 tableTime: json["table_time"] as? String ?? "",
-                tableDate: json["table_date"] as? String ?? "")
+                tableDate: json["table_date"] as? String ?? "",
+                mode: json["mode"] as? String ?? "delivery",
+                steps: json["steps"] as? [String] ?? [])
             await MainActor.run {
                 // Behagelig lyd til kunden hver gang ordren rykker et trin frem.
                 if let prev = lastStage, s.stage >= 0, s.stage > prev,
@@ -8074,7 +8103,7 @@ struct OrderTrackingView: View {
                 // leveringsordrer, saa kunden foelger status live - ligesom Wolt.
                 if #available(iOS 16.1, *), s.isDelivery, s.stage >= 0 {
                     WrombleLiveActivityManager.sync(orderId: orderId, companyName: s.companyName,
-                        stage: s.stage, statusLabel: s.label, etaText: s.etaText)
+                        stage: s.stage, statusLabel: s.label, etaText: s.etaText, mode: s.mode)
                 }
             }
         } catch {
