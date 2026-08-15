@@ -3618,21 +3618,26 @@ struct TableBookingView: View {
                 }.padding(.horizontal, 20).padding(.top, 26)
             } else {
                 Text("Vælg bord").font(.headline).padding(.horizontal, 20).padding(.bottom, 6)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(tables) { t in
-                            VStack(spacing: 2) {
-                                Text("Bord \(t.table_number)").font(.subheadline.weight(.bold))
-                                Text("\(t.persons) pers.").font(.caption).foregroundColor(.secondary)
-                            }
-                            .padding(.horizontal, 14).padding(.vertical, 10)
-                            .background(selectedTableId == t.id ? wrombleRed.opacity(0.12) : Color(.systemGray6))
-                            .foregroundColor(selectedTableId == t.id ? wrombleRed : .primary)
-                            .cornerRadius(14)
-                            .onTapGesture { selectedTableId = t.id }
+                // Bordene skal BRYDE om paa flere raekker. En vandret scroll skjulte
+                // de sidste borde ude i hoejre kant (bord nr. 4 og frem kunne slet
+                // ikke ses paa en almindelig telefon), og der er ingen pil eller
+                // skygge der roeber at der er mere. Nu vises alle borde paa én gang.
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)],
+                          alignment: .leading, spacing: 8) {
+                    ForEach(tables) { t in
+                        VStack(spacing: 2) {
+                            Text("Bord \(t.table_number)").font(.subheadline.weight(.bold))
+                            Text("\(t.persons) pers.").font(.caption).foregroundColor(.secondary)
                         }
-                    }.padding(.horizontal, 16)
-                }
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 10).padding(.vertical, 10)
+                        .background(selectedTableId == t.id ? wrombleRed.opacity(0.12) : Color(.systemGray6))
+                        .foregroundColor(selectedTableId == t.id ? wrombleRed : .primary)
+                        .cornerRadius(14)
+                        .contentShape(Rectangle())
+                        .onTapGesture { selectedTableId = t.id }
+                    }
+                }.padding(.horizontal, 16)
 
                 Text("Vælg tid").font(.headline).padding(.horizontal, 20).padding(.top, 14)
 
