@@ -6765,6 +6765,10 @@ struct MenuItemRow: View {
                             isPresented: $showAgeGate, titleVisibility: .visible) {
             Button("Ja, jeg er fyldt \(item.ageLimit) år") {
                 if item.ageLimit > confirmedAge { confirmedAge = item.ageLimit }
+                // Varen skal i kurven med det samme. Foer skulle kunden trykke plus
+                // en ekstra gang efter alderen var bekraeftet, og det lignede at
+                // knappen ikke virkede.
+                onAdd()
             }
             Button("Nej", role: .cancel) {}
         } message: {
