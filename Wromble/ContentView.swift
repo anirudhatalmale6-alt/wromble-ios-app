@@ -3846,6 +3846,9 @@ struct CompanyTablesView: View {
     @State private var showBookingEditor = false
     @State private var movingBooking: WrombleCompanyBooking?   // nil = ny reservation
     @State private var cancelTarget: WrombleCompanyBooking?
+    @State private var seats = 0                          // siddepladser i alt
+    @State private var nextNumber = 1                     // foerste ledige bordnummer
+    @State private var showBulk = false                   // "opret flere borde"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -3879,6 +3882,14 @@ struct CompanyTablesView: View {
             CompanyBookingEditor(booking: movingBooking, tables: tables) { saved in
                 showBookingEditor = false
                 if saved { Task { await load() } }
+            }
+        }
+        .sheet(isPresented: $showBulk) {
+            CompanyBulkTableEditor(existing: tables.map { $0.table_number },
+                                   startAt: nextNumber) { saved, msg in
+                showBulk = false
+                if saved { Task { await load() } }
+                if let m = msg { showToast(m) }
             }
         }
         .alert("Slet bord \(deleteTarget?.table_number ?? 0)?",
@@ -3915,14 +3926,32 @@ struct CompanyTablesView: View {
             if isLoading {
                 HStack { Spacer(); ProgressView(); Spacer() }
             } else if tables.isEmpty {
-                VStack(spacing: 8) {
+                VStack(spacing: 10) {
                     Text("Ingen borde endnu").font(.headline)
-                    Text("Opret dine borde her, så gæsterne kan reservere dem.")
+                    Text("Har I mange borde, skal I ikke oprette dem ét ad gangen. Vælg antal borde og antal personer, så laver vi dem alle sammen.")
                         .font(.caption).foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
+                    Button("Opret flere borde") { showBulk = true }
+                        .buttonStyle(.borderedProminent).tint(wrombleRed)
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 20)
             } else {
+                // Overblik + genvej til masseoprettelse
+                Section {
+                    Button {
+                        showBulk = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "wand.and.stars").foregroundColor(wrombleRed)
+                            Text("Opret flere borde på én gang").foregroundColor(wrombleRed)
+                        }
+                    }
+                } header: {
+                    Text("\(tables.count) \(tables.count == 1 ? "bord" : "borde")  ·  \(seats) siddepladser")
+                } footer: {
+                    Text("QR-koderne til bordene henter og printer du på wromble.dk under Indstillinger > Administrer borde.")
+                }
+
                 ForEach(tables) { t in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -3995,14 +4024,24 @@ struct CompanyTablesView: View {
               let bUrl = URL(string: "\(baseURL)/api/app-company-tables.php?bookings=1") else { return }
         do {
             let (data, _) = try await URLSession.shared.wrData(from: url)
-            struct Resp: Codable { let tables: [WrombleCompanyTable] }
+            struct Resp: Codable {
+                let tables: [WrombleCompanyTable]
+                let seats: Int?
+                let next_number: Int?
+            }
             let r = try JSONDecoder().decode(Resp.self, from: data)
             var list: [WrombleCompanyBooking] = []
             if let (bData, _) = try? await URLSession.shared.wrData(from: bUrl) {
                 struct BResp: Codable { let bookings: [WrombleCompanyBooking] }
                 list = (try? JSONDecoder().decode(BResp.self, from: bData))?.bookings ?? []
             }
-            await MainActor.run { tables = r.tables; bookings = list; isLoading = false }
+            await MainActor.run {
+                tables = r.tables
+                bookings = list
+                seats = r.seats ?? r.tables.reduce(0) { $0 + $1.persons }
+                nextNumber = max(1, r.next_number ?? ((r.tables.map { $0.table_number }.max() ?? 0) + 1))
+                isLoading = false
+            }
         } catch {
             await MainActor.run { isLoading = false; showToast("Kunne ikke hente borde") }
         }
@@ -4202,6 +4241,117 @@ struct CompanyTableEditor: View {
         postJSON("app-company-tables.php", payload) { ok, err in
             isSaving = false
             if ok { onDone(true); dismiss() } else { error = err ?? "Kunne ikke gemme bordet" }
+        }
+    }
+}
+
+// Opret mange borde paa en gang. Et stort spisested kan have 50 borde, og det
+// tager for lang tid at taste dem ind ét ad gangen. Serveren springer de
+// bordnumre over der findes i forvejen, saa den kan koeres flere gange - fx 20
+// borde til 2 personer, derefter 15 borde til 4 personer.
+struct CompanyBulkTableEditor: View {
+    let existing: [Int]                 // bordnumre der allerede er oprettet
+    let startAt: Int                    // foerste ledige nummer
+    let onDone: (Bool, String?) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var count = "10"
+    @State private var persons = "4"
+    @State private var start = ""
+    @State private var isSaving = false
+    @State private var error: String?
+
+    // Samme udregning som serveren laver, saa forhaandsvisningen passer
+    var planned: [Int] {
+        guard let c = Int(count), let s = Int(start), c > 0, s > 0 else { return [] }
+        let taken = Set(existing)
+        var out: [Int] = []
+        var n = s
+        var guardCount = 0
+        while out.count < min(c, 200) && guardCount < 2000 {
+            guardCount += 1
+            if !taken.contains(n) { out.append(n) }
+            n += 1
+        }
+        return out
+    }
+
+    var isValid: Bool {
+        guard let c = Int(count), let p = Int(persons), let s = Int(start) else { return false }
+        return c >= 1 && c <= 200 && p >= 1 && p <= 100 && s >= 1
+    }
+
+    var previewText: String {
+        let p = Int(persons) ?? 0
+        guard isValid, !planned.isEmpty else {
+            return "Udfyld felterne, så viser vi hvad der bliver oprettet."
+        }
+        if planned.count == 1 {
+            return "Opretter bord \(planned[0]) med plads til \(p) personer."
+        }
+        return "Opretter \(planned.count) borde (nr. \(planned[0])-\(planned[planned.count - 1])), "
+             + "hver med plads til \(p) personer. Det giver \(planned.count * p) siddepladser mere."
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    TextField("Antal borde", text: $count).keyboardType(.numberPad)
+                    TextField("Personer pr. bord", text: $persons).keyboardType(.numberPad)
+                    TextField("Start ved bordnummer", text: $start).keyboardType(.numberPad)
+                } header: {
+                    Text("Skriv hvor mange borde I vil have, og hvor mange der kan sidde ved hvert bord.")
+                } footer: {
+                    Text(previewText).foregroundColor(wrombleRed)
+                }
+
+                Section {
+                    Text("Bordnumre I har i forvejen bliver sprunget over. Har I forskellige bordstørrelser, kan du bare køre den igen – fx 20 borde til 2 personer, derefter 15 borde til 4 personer.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+
+                if let e = error {
+                    Section { Text(e).foregroundColor(wrombleRed).font(.caption) }
+                }
+            }
+            .navigationTitle("Opret flere borde")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuller") { onDone(false, nil); dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: save) { if isSaving { ProgressView() } else { Text("Opret") } }
+                        .disabled(isSaving || !isValid)
+                }
+            }
+            .onAppear { if start.isEmpty { start = String(max(1, startAt)) } }
+        }
+    }
+
+    func save() {
+        isSaving = true
+        error = nil
+        let made = planned.count
+        let first = planned.first ?? 0
+        let last = planned.last ?? 0
+        postJSON("app-company-tables.php", [
+            "action": "bulk",
+            "count": Int(count) ?? 0,
+            "persons": Int(persons) ?? 0,
+            "start": Int(start) ?? 0
+        ]) { ok, err in
+            isSaving = false
+            if ok {
+                let msg = made == 0
+                    ? "Der blev ikke oprettet nye borde – numrene fandtes i forvejen"
+                    : "\(made) borde er oprettet (nr. \(first)-\(last))"
+                onDone(true, msg)
+                dismiss()
+            } else {
+                error = err ?? "Kunne ikke oprette bordene"
+            }
         }
     }
 }
