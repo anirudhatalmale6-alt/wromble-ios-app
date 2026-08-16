@@ -360,6 +360,10 @@ class CartManager: ObservableObject {
     // saa forretningen ser hvilket bord maden skal ud til.
     @Published var tableReservationId: Int = 0
     @Published var tableReservationLabel: String = ""
+    // Kunden sidder ved bordet LIGE NU - bordets QR-kode er scannet. Så er der
+    // ingen reservation og ingen ventetid: køkkenet laver maden med det samme.
+    // Bestiller kunden derimod hjemmefra, skal der gå mindst 1 time.
+    @Published var atTableNumber: Int = 0
     // Hvordan kunden vil bestille - vaelges naar den foerste vare laegges i kurven:
     // "" = ikke valgt, "table" = bordbestilling, "delivery" = levering, "pickup" = afhentning
     @Published var orderMode: String = ""
@@ -411,7 +415,7 @@ class CartManager: ObservableObject {
         preorderAt = nil
     }
 
-    func clearTableReservation() { tableReservationId = 0; tableReservationLabel = "" }
+    func clearTableReservation() { tableReservationId = 0; tableReservationLabel = ""; atTableNumber = 0 }
 
     func clear() {
         items.removeAll()
@@ -3646,6 +3650,14 @@ struct TableBookingView: View {
                         Text("Ingen ledige tider på bord \(t.table_number) denne dag. Prøv en anden dag eller et andet bord.")
                             .font(.subheadline).foregroundColor(.secondary).padding(.horizontal, 20).padding(.top, 6)
                     } else {
+                        // Hvorfor er de naeste tider vaek? Fordi køkkenet skal have
+                        // en times varsel når man bestiller hjemmefra. Sidder man i
+                        // restauranten, scanner man bordets QR-kode i stedet.
+                        Text("Bestiller du hjemmefra, skal der være mindst 1 time til. Sidder du allerede i restauranten, så scan bordets QR-kode – så kan du bestille med det samme.")
+                            .font(.caption2).foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 2)
+
                         List(t.free_slots, id: \.self) { slot in
                             HStack {
                                 Text(wrPrettySlot(slot))
@@ -6649,6 +6661,20 @@ struct RestaurantDetailView: View {
         }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         cart.addItem(item, forRestaurant: restaurant.id, name: restaurant.name)
+        markScannedTable()
+    }
+
+    // Har kunden scannet bordets QR-kode, ER det en bordbestilling - og kunden
+    // sidder der allerede. Bordnummeret skal med i kurven, ellers blev ordren
+    // sendt af sted som en helt almindelig AFHENTNING uden bord overhovedet.
+    // Saettes efter addItem, som rydder kurven hvis kunden skifter restaurant.
+    func markScannedTable() {
+        guard let t = scannedTable else { return }
+        cart.atTableNumber = t
+        cart.orderMode = "table"
+        // Maden laves med det samme - det er ikke en forudbestilling
+        cart.preorder = false
+        cart.preorderAt = nil
     }
 
     // Laegger varen i kurven og husker den valgte bestillingsmaade. Er butikken
@@ -6835,7 +6861,32 @@ struct CartView: View {
     // Levering/afhentning + betaling (samme flow som wromble.dk)
     @State private var isDelivery = false            // false = Afhentning, true = Levering
     // Bordbestilling: maden serveres ved bordet - hverken levering eller afhentning
-    var isTableOrder: Bool { cart.orderMode == "table" || cart.tableReservationId > 0 }
+    var isTableOrder: Bool { cart.orderMode == "table" || cart.tableReservationId > 0 || cart.atTableNumber > 0 }
+    // Sidder kunden ved bordet nu (scannet QR)? Så ingen times varsel - og
+    // ingen tidsvaelger, for maden laves med det samme.
+    var isAtTableNow: Bool { cart.atTableNumber > 0 }
+
+    // Overskriften i Bordbestilling-feltet: enten bordet kunden sidder ved,
+    // eller den tid bordet er reserveret til.
+    var tableWhenTitle: String {
+        if isAtTableNow { return "Bord \(cart.atTableNumber)" }
+        if !cart.tableReservationLabel.isEmpty { return cart.tableReservationLabel }
+        return "Bordbestilling"
+    }
+    var tableWhenSubtitle: String {
+        if isAtTableNow {
+            return "Du sidder ved bordet – maden laves med det samme og serveres ved bordet."
+        }
+        if let at = cart.preorderAt {
+            let f = DateFormatter(); f.locale = Locale(identifier: "da_DK")
+            let cal = Calendar.current
+            if cal.isDateInToday(at) { f.dateFormat = "'i dag kl.' HH:mm" }
+            else if cal.isDateInTomorrow(at) { f.dateFormat = "'i morgen kl.' HH:mm" }
+            else { f.dateFormat = "EEEE 'd.' d/M 'kl.' HH:mm" }
+            return "Maden er klar \(f.string(from: at)), når du sætter dig ved bordet."
+        }
+        return "Maden er klar når du sætter dig ved bordet."
+    }
     @State private var deliveryAddress = ""
     @State private var paymentMethod = 2             // 1 = Online betaling, 2 = Kontanter
     // Drikkepenge til chaufføeren (kun ved levering). Betales separat med kort.
@@ -6930,18 +6981,23 @@ struct CartView: View {
         List {
             // Bordbestilling: vis det reserverede bord, saa kunden kan se at ordren
             // sendes til bordet (og kan fjerne reservationen igen).
-            if cart.tableReservationId > 0 {
+            if isTableOrder {
                 Section {
                     HStack(spacing: 10) {
                         Text("🍽️").font(.title3)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Bordbestilling").font(.subheadline.weight(.bold)).foregroundColor(wrombleRed)
-                            Text(cart.tableReservationLabel).font(.caption).foregroundColor(.secondary)
+                            Text(isAtTableNow ? "Bord \(cart.atTableNumber) · du sidder ved bordet"
+                                              : cart.tableReservationLabel)
+                                .font(.caption).foregroundColor(.secondary)
                         }
                         Spacer()
-                        // Fjernes bordet, falder ordren tilbage til afhentning
-                        Button("Fjern") { cart.clearTableReservation(); cart.orderMode = "pickup"; isDelivery = false }
-                            .font(.caption).foregroundColor(.secondary)
+                        // Fjernes bordet, falder ordren tilbage til afhentning.
+                        // Det scannede bord kan ikke fjernes - kunden sidder ved det.
+                        if cart.tableReservationId > 0 {
+                            Button("Fjern") { cart.clearTableReservation(); cart.orderMode = "pickup"; isDelivery = false }
+                                .font(.caption).foregroundColor(.secondary)
+                        }
                     }
                 }
             }
@@ -7006,14 +7062,31 @@ struct CartView: View {
             // Vaelges et tidspunkt, ser forretningen det direkte paa ordren.
             // Ved FORUDBESTILLING (lukket butik eller bordreservation) giver
             // "hurtigst muligt" ingen mening - der vaelges altid et tidspunkt.
+            // BORDBESTILLING har sin egen tid, og den skal IKKE kunne aendres her:
+            // enten er bordet reserveret til et bestemt klokkeslaet, eller også
+            // sidder kunden ved bordet nu. Før viste app'en en tidsvaelger med
+            // "1 time fra nu", så et bord booket til kl. 12.00 stod til kl. 12.47
+            // - og der stod "Afhentes" på en bestilling der serveres ved bordet.
+            if isTableOrder {
+                Section(header: Text("Bordbestilling")) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: isAtTableNow ? "qrcode" : "clock.badge.checkmark")
+                            .foregroundColor(wrombleRed)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(tableWhenTitle).font(.subheadline.weight(.semibold))
+                            Text(tableWhenSubtitle)
+                                .font(.caption).foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            } else {
             Section(header: Text(cart.preorder ? "Forudbestilling"
                                                : (isDelivery ? "Leveringstidspunkt" : "Afhentningstidspunkt"))) {
                 if cart.preorder {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "clock.badge.checkmark").foregroundColor(wrombleRed)
-                        Text(isTableOrder
-                             ? "Maden er klar når du sætter dig ved bordet."
-                             : "Butikken er lukket nu. Din bestilling sendes ind til det tidspunkt du vælger.")
+                        Text("Butikken er lukket nu. Din bestilling sendes ind til det tidspunkt du vælger.")
                             .font(.subheadline).foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -7040,7 +7113,7 @@ struct CartView: View {
                 }
 
                 if scheduleLater {
-                    DatePicker(isTableOrder ? "Bordet" : (isDelivery ? "Leveres" : "Afhentes"),
+                    DatePicker(isDelivery ? "Leveres" : "Afhentes",
                                selection: $wantedTime,
                                in: earliestOrderTime...,
                                displayedComponents: [.date, .hourAndMinute])
@@ -7051,6 +7124,7 @@ struct CartView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            }
 
             // Betalingsmetode (som paa wromble.dk)
             Section(header: Text("Betalingsmetode")) {
@@ -7059,7 +7133,9 @@ struct CartView: View {
                         Image(systemName: "banknote").foregroundColor(wrombleRed)
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Kontanter").foregroundColor(.primary)
-                            Text("Betal ved afhentning/levering").font(.caption2).foregroundColor(.secondary)
+                            // Bordbestilling hverken hentes eller leveres - der betales ved bordet
+                            Text(isTableOrder ? "Betal ved bordet" : "Betal ved afhentning/levering")
+                                .font(.caption2).foregroundColor(.secondary)
                         }
                         Spacer()
                         if paymentMethod == 2 { Image(systemName: "checkmark.circle.fill").foregroundColor(wrombleRed) }
@@ -7222,9 +7298,14 @@ struct CartView: View {
             // Kunden valgte allerede levering/afhentning da varen kom i kurven
             if cart.orderMode == "delivery" { isDelivery = true }
             else if cart.orderMode == "pickup" || isTableOrder { isDelivery = false }
-            // Forudbestilling: foreslaa foerste aabningstid (eller bordets tid),
-            // dog altid mindst 1 time frem som serveren kraever.
-            if cart.preorder {
+            // Bordbestilling: tiden ER bordets tid. Den maa IKKE skubbes til
+            // "1 time fra nu" - så stod et bord booket til kl. 12.00 til kl. 12.47.
+            if isTableOrder {
+                scheduleLater = false
+                if let at = cart.preorderAt { wantedTime = at }
+            } else if cart.preorder {
+                // Forudbestilling til en lukket butik: foreslaa foerste aabningstid,
+                // dog altid mindst 1 time frem som serveren kraever.
                 scheduleLater = true
                 let target = cart.preorderAt ?? earliestOrderTime
                 wantedTime = max(target, earliestOrderTime)
@@ -7453,10 +7534,17 @@ struct CartView: View {
             "payment_method": paymentMethod,
             "delivery_address": deliveryAddress,
             "wanted_time": wantedTimeLabel,
-            // Oensket tid som unix-tid (0 = hurtigst muligt). Serveren haandhaever mindst 1 time frem.
-            "wanted_ts": scheduleLater ? Int(wantedTime.timeIntervalSince1970) : 0,
+            // Oensket tid som unix-tid (0 = hurtigst muligt). Serveren haandhaever
+            // mindst 1 time frem - undtagen ved bordbestilling, hvor tiden er
+            // bordets egen (reservationen), eller med det samme (scannet bord).
+            "wanted_ts": isTableOrder
+                ? (isAtTableNow ? 0 : Int((cart.preorderAt ?? wantedTime).timeIntervalSince1970))
+                : (scheduleLater ? Int(wantedTime.timeIntervalSince1970) : 0),
             // Bordbestilling: serveren tjekker at reservationen er kundens egen
             "table_res_id": cart.tableReservationId,
+            // Scannet bord (kunden sidder der nu). Serveren slaar nummeret op hos
+            // netop denne forretning og laver maden med det samme.
+            "table_number": cart.atTableNumber,
             "items": cart.items.map { ["id": $0.id, "quantity": $0.quantity] as [String: Any] }
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
