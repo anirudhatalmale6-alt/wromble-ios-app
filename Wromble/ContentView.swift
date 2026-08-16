@@ -227,7 +227,7 @@ struct Order: Identifiable {
     let total: Double
     let status: String
     let items: [OrderItem]
-    // "delivery" / "pickup" / "table" - afgoer om der staar Leveret, Afhentet eller Serveret.
+    // "delivery" / "pickup" / "table" - afgoer om der staar Leveret, Afhentet eller Klar.
     var mode: String = "delivery"
 }
 
@@ -323,6 +323,18 @@ struct OrderStatus {
     // selv skal gaette: "delivery" (4 trin) / "pickup" og "table" (3 trin).
     var mode: String = "delivery"
     var steps: [String] = []
+    // Hvad kunden har koebt - vises direkte paa sporingen
+    var items: [OrderStatusItem] = []
+    // Selvbetjent annullering: kunden maa aflyse indtil 2 timer foer tiden
+    var canCancel: Bool = false
+    var cancelText: String = ""
+}
+
+struct OrderStatusItem: Identifiable {
+    let id = UUID()
+    let name: String
+    let quantity: Int
+    let price: Double
 }
 
 // MARK: - Favorites Manager
@@ -7757,7 +7769,7 @@ struct OrdersView: View {
             // En afhentning bliver AFHENTET - ikke leveret.
             case "completed", "delivered":
                 if mode == "pickup" { return ("Afhentet", .green) }
-                if mode == "table"  { return ("Serveret", .green) }
+                if mode == "table"  { return ("Klar", .green) }
                 return ("Leveret", .green)
             case "processing", "preparing": return ("Tilberedes", .orange)
             // Chauffoeren har trykket "Start levering" og er paa vej med ordren
@@ -7905,6 +7917,10 @@ struct OrderTrackingView: View {
     @State private var isLoading = true
     @State private var pollTimer: Timer?
     @State private var lastStage: Int? = nil     // til at spille en lyd naar ordren rykker et trin frem
+    // Kundens egen annullering (kun indtil 2 timer foer tiden)
+    @State private var showCancelConfirm = false
+    @State private var isCancelling = false
+    @State private var cancelError = ""
     @State private var mapRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 55.676, longitude: 12.568),
         span: MKCoordinateSpan(latitudeDelta: 0.04, longitudeDelta: 0.04))
@@ -8048,14 +8064,89 @@ struct OrderTrackingView: View {
                             Button(action: { openInMaps() }) {
                                 HStack {
                                     Image(systemName: "arrow.triangle.turn.up.right.circle.fill")
+                                    // Ruten gaar til RESTAURANTEN - ogsaa ved en bordbestilling.
+                                    // Kort-app'en kan ikke vise vej hen til et bord inde i lokalet.
                                     Text(s.isDelivery ? "Åbn adressen i Kort (rutevejledning)"
-                                                      : (s.isTable ? "Rutevejledning til bordet" : "Rutevejledning til restauranten"))
+                                                      : "Rutevejledning til restauranten")
                                         .font(.subheadline.weight(.semibold))
                                 }
                                 .foregroundColor(wrombleRed)
                                 .frame(maxWidth: .infinity).padding(.vertical, 12)
                                 .background(wrombleRed.opacity(0.10)).cornerRadius(12)
                             }
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                }
+
+                // Hvad kunden har koebt. Stod foer kun i ordrehistorikken, saa man
+                // kunne ikke se sin egen bestilling mens man fulgte den.
+                if let s = status, !s.items.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Din bestilling")
+                            .font(.subheadline.weight(.bold))
+                            .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
+                        ForEach(s.items) { item in
+                            HStack(alignment: .top, spacing: 10) {
+                                Text("\(item.quantity)×")
+                                    .font(.subheadline.weight(.bold)).foregroundColor(wrombleRed)
+                                    .frame(minWidth: 28, alignment: .leading)
+                                Text(item.name).font(.subheadline)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 8)
+                                Text(String(format: "%.2f kr", item.price * Double(item.quantity)))
+                                    .font(.subheadline).foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                            if item.id != s.items.last?.id {
+                                Divider().padding(.leading, 14)
+                            }
+                        }
+                        Divider().padding(.leading, 14)
+                        HStack {
+                            Text("Total").font(.subheadline.weight(.bold))
+                            Spacer()
+                            Text(String(format: "%.2f kr", s.total)).font(.subheadline.weight(.bold))
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 12)
+                    }
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(14)
+                    .padding(.horizontal, 20)
+                }
+
+                // Annuller selv - men kun indtil 2 timer foer tiden. Derefter har
+                // koekkenet disponeret efter bestillingen, og saa staar der hvorfor
+                // knappen er vaek i stedet for bare ingenting.
+                if let s = status, !isRejected, rawStage < 3 {
+                    VStack(spacing: 8) {
+                        if s.canCancel {
+                            Button(role: .destructive) {
+                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                showCancelConfirm = true
+                            } label: {
+                                HStack {
+                                    if isCancelling { ProgressView().tint(.red) }
+                                    else { Image(systemName: "xmark.circle") }
+                                    Text(s.isTable ? "Annuller bordbestilling" : "Annuller bestilling")
+                                        .font(.subheadline.weight(.semibold))
+                                }
+                                .foregroundColor(.red)
+                                .frame(maxWidth: .infinity).padding(.vertical, 12)
+                                .background(Color.red.opacity(0.10)).cornerRadius(12)
+                            }
+                            .disabled(isCancelling)
+                        }
+                        if !s.cancelText.isEmpty {
+                            Text(s.cancelText)
+                                .font(.caption2).foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if !cancelError.isEmpty {
+                            Text(cancelError).font(.caption).foregroundColor(.red)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .padding(.horizontal, 20)
@@ -8070,6 +8161,33 @@ struct OrderTrackingView: View {
         .refreshable { await fetchStatus() }
         .onAppear { startPolling() }
         .onDisappear { pollTimer?.invalidate() }
+        .confirmationDialog("Annuller bestillingen?", isPresented: $showCancelConfirm, titleVisibility: .visible) {
+            Button("Ja, annuller", role: .destructive) { cancelOrder() }
+            Button("Fortryd", role: .cancel) {}
+        } message: {
+            Text(status?.isTable == true
+                 ? "Bestillingen aflyses, og bordet bliver frigivet igen. Det kan ikke fortrydes."
+                 : "Bestillingen aflyses hos restauranten. Det kan ikke fortrydes.")
+        }
+    }
+
+    // Kunden aflyser selv. Serveren tjekker 2-timers reglen igen - knappen kan
+    // have staaet aaben paa skaermen indtil fristen loeb ud.
+    func cancelOrder() {
+        guard !isCancelling else { return }
+        isCancelling = true
+        cancelError = ""
+        postJSONRaw("app-cancel-order.php", ["order_id": orderId]) { ok, err, _ in
+            isCancelling = false
+            if ok {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                Task { await fetchStatus() }
+            } else {
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                cancelError = err ?? "Bestillingen kunne ikke annulleres. Prøv igen."
+                Task { await fetchStatus() }
+            }
+        }
     }
 
     var ringIcon: String {
@@ -8079,7 +8197,8 @@ struct OrderTrackingView: View {
         let table  = (status?.mode ?? "delivery") == "table"
         switch rawStage {
         case 3: return pickup ? "bag.fill" : (table ? "fork.knife.circle.fill" : "checkmark.seal.fill")
-        case 2: return "bicycle"
+        // Ingen cykel paa en bordbestilling - der er ingen der koerer med den.
+        case 2: return table ? "flame.fill" : "bicycle"
         case 1: return "fork.knife"
         default: return "clock.badge.checkmark"
         }
@@ -8261,7 +8380,14 @@ struct OrderTrackingView: View {
                 tableTime: json["table_time"] as? String ?? "",
                 tableDate: json["table_date"] as? String ?? "",
                 mode: json["mode"] as? String ?? "delivery",
-                steps: json["steps"] as? [String] ?? [])
+                steps: json["steps"] as? [String] ?? [],
+                items: ((json["items"] as? [[String: Any]]) ?? []).map {
+                    OrderStatusItem(name: $0["name"] as? String ?? "",
+                                    quantity: $0["quantity"] as? Int ?? 1,
+                                    price: ($0["price"] as? NSNumber)?.doubleValue ?? 0)
+                },
+                canCancel: (json["can_cancel"] as? Bool) ?? false,
+                cancelText: json["cancel_text"] as? String ?? "")
             await MainActor.run {
                 // Behagelig lyd til kunden hver gang ordren rykker et trin frem.
                 if let prev = lastStage, s.stage >= 0, s.stage > prev,
